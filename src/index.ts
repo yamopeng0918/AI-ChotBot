@@ -26,31 +26,13 @@ app.post("/webhooks/line", async (context) => {
   }
 
   const messages = selectMentionedMessages(payload, context.env.LINE_GROUP_ID);
-  for (const message of messages) {
-    const receivedAt = new Date().toISOString();
-    let claimed = false;
-
-    try {
-      const result = await context.env.DB.prepare(
-        "INSERT OR IGNORE INTO line_webhook_receipts (webhook_event_id, received_at) VALUES (?, ?)",
-      ).bind(message.webhookEventId, receivedAt).run();
-      claimed = result.meta.changes === 1;
-      if (!claimed) continue;
-
-      const job: QuestionJob = { ...message, receivedAt };
+  try {
+    for (const message of messages) {
+      const job: QuestionJob = { ...message, receivedAt: new Date().toISOString() };
       await context.env.MESSAGE_QUEUE.send(job);
-    } catch {
-      if (claimed) {
-        try {
-          await context.env.DB.prepare(
-            "DELETE FROM line_webhook_receipts WHERE webhook_event_id = ?",
-          ).bind(message.webhookEventId).run();
-        } catch {
-          // Preserve the retry response even if D1 is temporarily unavailable.
-        }
-      }
-      return context.json({ error: "queue unavailable" }, 503);
     }
+  } catch {
+    return context.json({ error: "queue unavailable" }, 503);
   }
 
   return context.json({ accepted: messages.length });

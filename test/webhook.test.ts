@@ -32,34 +32,7 @@ function eligibleEvent() {
   };
 }
 
-class FakeReceiptDatabase {
-  readonly claims = new Map<string, string>();
-
-  prepare(query: string) {
-    return {
-      bind: (webhookEventId: string, receivedAt?: string) => ({
-        run: async () => {
-          if (query.startsWith("INSERT")) {
-            if (this.claims.has(webhookEventId)) return { meta: { changes: 0 } };
-            this.claims.set(webhookEventId, receivedAt!);
-            return { meta: { changes: 1 } };
-          }
-          if (query.startsWith("DELETE")) {
-            const changes = this.claims.delete(webhookEventId) ? 1 : 0;
-            return { meta: { changes } };
-          }
-          throw new Error(`Unexpected query: ${query}`);
-        },
-      }),
-    };
-  }
-}
-
-async function post(
-  body: string,
-  send: ReturnType<typeof vi.fn>,
-  db = new FakeReceiptDatabase(),
-) {
+async function post(body: string, send: ReturnType<typeof vi.fn>) {
   return worker.fetch(
     new Request("https://bot.test/webhooks/line", {
       method: "POST",
@@ -73,7 +46,6 @@ async function post(
       LINE_CHANNEL_SECRET: "secret",
       LINE_GROUP_ID: "group-1",
       MESSAGE_QUEUE: { send },
-      DB: db,
     } as never,
     {} as never,
   );
@@ -127,43 +99,17 @@ describe("POST /webhooks/line queue publication", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps successful claims while releasing a failed event for redelivery", async () => {
-    const db = new FakeReceiptDatabase();
-    const eventA = eligibleEvent();
-    const eventB = {
-      ...eligibleEvent(),
-      webhookEventId: "event-2",
-      replyToken: "reply-2",
-      message: { ...eligibleEvent().message, id: "message-2" },
-    };
-    const body = JSON.stringify({ events: [eventA, eventB] });
-    const send = vi.fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("queue unavailable"))
-      .mockResolvedValue(undefined);
-
-    expect((await post(body, send, db)).status).toBe(503);
-    expect((await post(body, send, db)).status).toBe(200);
-
-    expect(send).toHaveBeenCalledTimes(3);
-    const jobs = send.mock.calls.map(([job]) => job);
-    expect(jobs.map((job) => job.webhookEventId)).toEqual([
-      "event-1",
-      "event-2",
-      "event-2",
-    ]);
-    expect(db.claims.get("event-1")).toBe(jobs[0].receivedAt);
-    expect(db.claims.get("event-2")).toBe(jobs[2].receivedAt);
-  });
-
-  it("atomically claims a duplicate webhook ID only once", async () => {
-    const db = new FakeReceiptDatabase();
+  it("may enqueue the same stable webhook ID again when LINE redelivers", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const body = JSON.stringify({ events: [eligibleEvent()] });
 
-    const responses = await Promise.all([post(body, send, db), post(body, send, db)]);
+    expect((await post(body, send)).status).toBe(200);
+    expect((await post(body, send)).status).toBe(200);
 
-    expect(responses.map((response) => response.status)).toEqual([200, 200]);
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([job]) => job.webhookEventId)).toEqual([
+      "event-1",
+      "event-1",
+    ]);
   });
 });

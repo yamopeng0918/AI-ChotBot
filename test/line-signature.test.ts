@@ -87,11 +87,6 @@ describe("POST /webhooks/line signature boundary", () => {
         LINE_CHANNEL_SECRET: "secret",
         LINE_GROUP_ID: "group-1",
         MESSAGE_QUEUE: { send: async () => undefined },
-        DB: {
-          prepare: () => ({
-            bind: () => ({ run: async () => ({ meta: { changes: 1 } }) }),
-          }),
-        },
       } as never,
       {} as never,
     );

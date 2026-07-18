@@ -19,6 +19,8 @@
 - 問答原文只保存 30 天；不得保存 LINE 顯示名稱、頭像或建立個人輪廓。
 - 密鑰只存在 Worker secrets；程式碼、測試 fixture 與 log 不得輸出密鑰。
 - 免費額度用盡時安全失敗，不進行無限重試。
+- LINE webhook 到 Queue 採至少一次投遞；不得宣稱跨 D1 與 Queue 的原子 exactly-once。
+- 使用者端必須嚴格去重：同一 `webhookEventId` 最多產生一次成功的 LLM 回答與 LINE 回覆；中斷中的工作以具期限的處理租約恢復。
 
 ## Scope Decomposition
 
@@ -166,7 +168,7 @@ git add src/line src/index.ts test/line-signature.test.ts test/line-events.test.
 git commit -m "feat: validate LINE mention webhooks"
 ```
 
-### Task 3: Queue accepted messages exactly once
+### Task 3: Queue accepted messages with at-least-once delivery
 
 **Files:**
 - Create: `src/jobs/types.ts`
@@ -180,7 +182,7 @@ git commit -m "feat: validate LINE mention webhooks"
 
 - [ ] **Step 1: Write failing webhook tests**
 
-Inject a fake queue with a `send` spy. Assert that a signed payload containing one eligible event sends exactly one `QuestionJob`, returns `200`, and never queues ineligible events. Also assert malformed signed JSON returns `400` and a queue exception returns `503` so LINE can redeliver.
+Inject a fake queue with a `send` spy. Assert that a signed payload containing one eligible event sends one `QuestionJob` per handler attempt, returns `200`, and never queues ineligible events. Also assert malformed signed JSON returns `400` and a queue exception returns `503` so LINE can redeliver. A redelivered webhook may enqueue the same stable `webhookEventId` again; Task 6 provides consumer-side idempotency so this never becomes a duplicate LLM call or LINE reply.
 
 - [ ] **Step 2: Confirm failure**
 
@@ -298,16 +300,16 @@ git commit -m "feat: process and reply to LINE questions"
 
 **Interfaces:**
 - Produces: `QuestionRecord` with `webhookEventId`, pseudonymous `userKey`, `question`, `answer`, `status`, `model`, `createdAt`, and `expiresAt`.
-- Produces: `QuestionsRepository.record(record): Promise<void>` and `purgeExpired(nowIso: string): Promise<number>`.
+- Produces: `QuestionsRepository.claim(webhookEventId, leaseUntilIso): Promise<"claimed" | "completed" | "busy">`, `complete(record): Promise<void>`, `release(webhookEventId): Promise<void>`, and `purgeExpired(nowIso: string): Promise<number>`.
 - `userKey` is HMAC-SHA256 of LINE `userId` using a separate `ANALYTICS_HASH_KEY`; when `userId` is unavailable it is `null`.
 
 - [ ] **Step 1: Write the migration**
 
-Create a `questions` table whose primary key is `webhook_event_id`; include nullable `user_key`, question and answer text, constrained status, nullable model, `created_at`, and `expires_at`. Add indexes on `created_at`, `expires_at`, and `user_key`. Do not include raw LINE user ID, display name, avatar, group conversation history, or access tokens.
+Create a `questions` table whose primary key is `webhook_event_id`; include nullable `user_key`, question and answer text, constrained status (`processing`, `answered`, `provider_unavailable`, `reply_failed`), nullable `lease_until`, nullable model, `created_at`, `updated_at`, and `expires_at`. Add indexes on `created_at`, `expires_at`, `lease_until`, and `user_key`. Do not include raw LINE user ID, display name, avatar, group conversation history, or access tokens.
 
 - [ ] **Step 2: Write failing repository tests**
 
-Using the Workers D1 test binding, assert insert is idempotent on duplicate webhook IDs, records do not contain raw user ID, `expiresAt` is exactly 30 days after creation, and purge deletes only expired rows.
+Using the Workers D1 test binding, assert the first claim succeeds, a concurrent claim returns `busy`, a completed event returns `completed`, and an expired processing lease can be reclaimed. Assert records do not contain raw user ID, `expiresAt` is exactly 30 days after creation, and purge deletes only expired rows.
 
 - [ ] **Step 3: Implement repository and pseudonymization**
 
@@ -315,7 +317,7 @@ Use parameterized D1 statements. Implement `pseudonymizeUserId(userId, analytics
 
 - [ ] **Step 4: Connect recording and scheduled purge**
 
-Record `answered`, `provider_unavailable`, and `reply_failed` outcomes. Configure a daily `17 19 * * *` UTC cron trigger, corresponding to 03:17 Asia/Taipei, and call `purgeExpired(new Date().toISOString())` in the scheduled handler.
+Before calling the LLM, claim a 60-second processing lease. Ack duplicate completed jobs without another LLM call or LINE reply; retry `busy` jobs after the lease window. Complete `answered`, `provider_unavailable`, and `reply_failed` outcomes atomically with diagnostic fields. Release the claim only when a retryable failure occurs before a LINE reply is accepted. Configure a daily `17 19 * * *` UTC cron trigger, corresponding to 03:17 Asia/Taipei, and call `purgeExpired(new Date().toISOString())` in the scheduled handler.
 
 - [ ] **Step 5: Verify and commit**
 

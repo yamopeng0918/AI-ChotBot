@@ -6,6 +6,7 @@ CREATE TABLE questions (
   status TEXT NOT NULL CHECK (status IN ('processing','answered','provider_unavailable','reply_failed')),
   prepared_status TEXT CHECK (prepared_status IN ('answered','provider_unavailable')),
   lease_until TEXT,
+  lease_token TEXT,
   model TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

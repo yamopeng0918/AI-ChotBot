@@ -58,9 +58,9 @@ const worker = {
     for (const message of batch.messages) {
       try {
         const result = await processQuestion(message.body, dependencies);
-        if (result.disposition === "ack") message.ack(); else message.retry();
+        if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
       } catch {
-        message.retry();
+        message.retry({ delaySeconds: 1 });
       }
     }
   },

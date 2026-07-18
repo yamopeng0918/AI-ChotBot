@@ -1,4 +1,5 @@
 import type { QuestionJob } from "./jobs/types";
+import type { Fetcher } from "./line/client";
 
 export interface Env {
   LINE_CHANNEL_SECRET: string;
@@ -8,4 +9,5 @@ export interface Env {
   OPENROUTER_MODEL: string;
   MESSAGE_QUEUE: Queue<QuestionJob>;
   DB: D1Database;
+  FETCHER?: Fetcher;
 }

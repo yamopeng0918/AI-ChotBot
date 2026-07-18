@@ -51,11 +51,32 @@ describe("processQuestion", () => {
     },
   );
 
-  it("throws when LINE delivery fails", async () => {
+  it("records a normal-answer LINE failure once and rethrows it unchanged", async () => {
     const deps = dependencies();
-    deps.lineClient.reply.mockRejectedValue(new LineReplyError(503));
+    const failure = new LineReplyError(503);
+    deps.lineClient.reply.mockRejectedValue(failure);
 
-    await expect(processQuestion(job, deps)).rejects.toBeInstanceOf(LineReplyError);
+    await expect(processQuestion(job, deps)).rejects.toBe(failure);
+    expect(deps.recorder.record).toHaveBeenCalledOnce();
+    expect(deps.recorder.record).toHaveBeenCalledWith(job, {
+      status: "reply_failed",
+      model: "model",
+    });
+  });
+
+  it("records a fallback LINE failure once with no model and rethrows it unchanged", async () => {
+    const deps = dependencies(
+      vi.fn().mockRejectedValue(new AnswerUnavailableError("provider_error")),
+    );
+    const failure = new LineReplyError(503);
+    deps.lineClient.reply.mockRejectedValue(failure);
+
+    await expect(processQuestion(job, deps)).rejects.toBe(failure);
+    expect(deps.recorder.record).toHaveBeenCalledOnce();
+    expect(deps.recorder.record).toHaveBeenCalledWith(job, {
+      status: "reply_failed",
+      model: null,
+    });
   });
 });
 

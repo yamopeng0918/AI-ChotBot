@@ -1,13 +1,17 @@
 import type { AnswerService } from "../answers/types";
-import type { LineClient } from "../line/client";
+import { LineReplyError, type LineClient } from "../line/client";
 import type { QuestionJob } from "./types";
 
 export type ProcessResult = {
   status: "answered" | "provider_unavailable" | "reply_failed";
 };
 
+export type RecordedProcessResult = ProcessResult & {
+  model: string | null;
+};
+
 export interface QuestionRecorder {
-  record(job: QuestionJob, result: ProcessResult): Promise<void>;
+  record(job: QuestionJob, result: RecordedProcessResult): Promise<void>;
 }
 
 export interface ProcessDependencies {
@@ -24,17 +28,32 @@ export async function processQuestion(
 ): Promise<ProcessResult> {
   let text: string;
   let result: ProcessResult;
+  let model: string | null;
 
   try {
     const answer = await dependencies.answerService.answer({ question: job.text, locale: "zh-TW" });
     text = answer.text;
+    model = answer.model;
     result = { status: "answered" };
   } catch {
     text = PROVIDER_UNAVAILABLE_TEXT;
+    model = null;
     result = { status: "provider_unavailable" };
   }
 
-  await dependencies.lineClient.reply(job.replyToken, text);
-  await dependencies.recorder.record(job, result);
+  try {
+    await dependencies.lineClient.reply(job.replyToken, text);
+  } catch (error) {
+    if (error instanceof LineReplyError) {
+      try {
+        await dependencies.recorder.record(job, { status: "reply_failed", model });
+      } finally {
+        throw error;
+      }
+    }
+    throw error;
+  }
+
+  await dependencies.recorder.record(job, { ...result, model });
   return result;
 }

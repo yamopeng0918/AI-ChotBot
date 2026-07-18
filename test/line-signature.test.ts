@@ -83,7 +83,11 @@ describe("POST /webhooks/line signature boundary", () => {
         },
         body,
       }),
-      { LINE_CHANNEL_SECRET: "secret", LINE_GROUP_ID: "group-1" } as never,
+      {
+        LINE_CHANNEL_SECRET: "secret",
+        LINE_GROUP_ID: "group-1",
+        MESSAGE_QUEUE: { send: async () => undefined },
+      } as never,
       {} as never,
     );
 

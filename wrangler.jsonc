@@ -2,5 +2,15 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "line-running-community-bot",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-17"
+  "compatibility_date": "2026-07-17",
+  "queues": {
+    "producers": [{ "binding": "MESSAGE_QUEUE", "queue": "line-question-jobs" }],
+    "consumers": [{
+      "queue": "line-question-jobs",
+      "max_batch_size": 5,
+      "max_batch_timeout": 2,
+      "max_retries": 2,
+      "dead_letter_queue": "line-question-jobs-dlq"
+    }]
+  }
 }

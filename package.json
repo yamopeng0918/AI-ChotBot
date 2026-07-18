@@ -1,0 +1,21 @@
+{
+  "name": "line-running-community-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "hono": "4.12.30"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260717.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10",
+    "wrangler": "4.112.0"
+  }
+}

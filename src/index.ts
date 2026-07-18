@@ -10,6 +10,12 @@ import { verifyLineSignature } from "./line/signature";
 import type { LineWebhookBody } from "./line/types";
 import { QuestionsRepository, pseudonymizeUserId } from "./storage/questions";
 
+type WorkerDependencies = {
+  fetcher?: typeof fetch;
+  now?: () => Date;
+};
+
+export function createWorker(overrides: WorkerDependencies = {}) {
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/health", (context) => context.json({ status: "ok" }));
@@ -32,7 +38,7 @@ app.post("/webhooks/line", async (context) => {
   const messages = selectMentionedMessages(payload, context.env.LINE_GROUP_ID);
   try {
     for (const message of messages) {
-      const job: QuestionJob = { ...message, receivedAt: new Date().toISOString() };
+      const job: QuestionJob = { ...message, receivedAt: (overrides.now?.() ?? new Date()).toISOString() };
       await context.env.MESSAGE_QUEUE.send(job);
     }
   } catch {
@@ -42,17 +48,18 @@ app.post("/webhooks/line", async (context) => {
   return context.json({ accepted: messages.length });
 });
 
-const worker = {
+return {
   fetch(request, env, context) {
     return app.fetch(request, env, context);
   },
   async queue(batch: MessageBatch<QuestionJob>, env: Env, _context: ExecutionContext) {
-    const fetcher = env.FETCHER ?? fetch;
+    const fetcher = overrides.fetcher ?? env.FETCHER ?? fetch;
     const dependencies = {
       answerService: new OpenRouterAnswerService(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
       questions: new QuestionsRepository(env.DB),
       pseudonymize: (userId: string | null) => pseudonymizeUserId(userId, env.ANALYTICS_HASH_KEY),
+      now: overrides.now,
     };
 
     for (const message of batch.messages) {
@@ -65,8 +72,11 @@ const worker = {
     }
   },
   async scheduled(_controller, env) {
-    await new QuestionsRepository(env.DB).purgeExpired(new Date().toISOString());
+    await new QuestionsRepository(env.DB).purgeExpired((overrides.now?.() ?? new Date()).toISOString());
   },
 } satisfies ExportedHandler<Env, QuestionJob>;
+}
+
+const worker = createWorker();
 
 export default worker;

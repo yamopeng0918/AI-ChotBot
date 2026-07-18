@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import worker from "../src/index";
+import worker, { createWorker } from "../src/index";
 
 const encoder = new TextEncoder();
 
@@ -52,6 +52,53 @@ async function post(body: string, send: ReturnType<typeof vi.fn>) {
 }
 
 describe("POST /webhooks/line queue publication", () => {
+  it("uses an injected queue sender instead of the environment binding", async () => {
+    const injectedSend = vi.fn().mockResolvedValue(undefined);
+    const envSend = vi.fn().mockResolvedValue(undefined);
+    const injectedWorker = createWorker({ queue: { send: injectedSend } });
+    const body = JSON.stringify({ events: [eligibleEvent()] });
+    const response = await injectedWorker.fetch(new Request("https://bot.test/webhooks/line", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-line-signature": await sign(body, "secret") },
+      body,
+    }), { LINE_CHANNEL_SECRET: "secret", LINE_GROUP_ID: "group-1", MESSAGE_QUEUE: { send: envSend } } as never, {} as never);
+
+    expect(response.status).toBe(200);
+    expect(injectedSend).toHaveBeenCalledOnce();
+    expect(envSend).not.toHaveBeenCalled();
+  });
+
+  it("logs only group IDs and performs no work in exact discovery mode", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const body = JSON.stringify({ events: [eligibleEvent(), { ...eligibleEvent(), webhookEventId: "event-2" }] });
+
+    const response = await worker.fetch(new Request("https://bot.test/webhooks/line", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-line-signature": await sign(body, "secret") },
+      body,
+    }), { LINE_CHANNEL_SECRET: "secret", LINE_GROUP_ID: "__DISCOVER__", MESSAGE_QUEUE: { send } } as never, {} as never);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ accepted: 0 });
+    expect(info).toHaveBeenCalledTimes(2);
+    expect(info.mock.calls).toEqual([["group-1"], ["group-1"]]);
+    expect(send).not.toHaveBeenCalled();
+    info.mockRestore();
+  });
+
+  it("does not enable discovery for near-sentinel values", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const body = JSON.stringify({ events: [eligibleEvent()] });
+    await worker.fetch(new Request("https://bot.test/webhooks/line", {
+      method: "POST", headers: { "x-line-signature": await sign(body, "secret") }, body,
+    }), { LINE_CHANNEL_SECRET: "secret", LINE_GROUP_ID: "__discover__", MESSAGE_QUEUE: { send } } as never, {} as never);
+    expect(info).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    info.mockRestore();
+  });
+
   it("queues one QuestionJob for one eligible mention", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const response = await post(JSON.stringify({ events: [eligibleEvent()] }), send);

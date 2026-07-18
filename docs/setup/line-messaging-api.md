@@ -12,9 +12,26 @@
 ## Select and test the group
 
 1. Invite the Official Account into the designated LINE group.
-2. Capture the `source.groupId` from a signed group webhook in Worker logs, set that exact value as `LINE_GROUP_ID`, and redeploy. Do not use the displayed group name.
-3. Mention the Official Account using LINE's mention UI and include a question. Plain text containing `@name` without LINE mention metadata is intentionally ignored.
-4. Confirm one visible reply and one D1 row with `status='answered'` (see the README smoke check). A message without a mention and a message from another group must produce neither.
+2. Temporarily enable the narrow discovery mode and start a log tail:
+
+   ```powershell
+   '__DISCOVER__' | npx wrangler secret put LINE_GROUP_ID
+   npx wrangler deploy
+   npx wrangler tail
+   ```
+
+3. In the designated group, send one harmless LINE-native mention. The Worker verifies the webhook signature, logs only the `groupId`, and intentionally does not enqueue or reply. It never logs message text or user IDs in this mode. Copy the `groupId` shown by `wrangler tail`; do not use the displayed group name.
+4. **Immediately replace the sentinel**—do not leave discovery active, because every valid group webhook is suppressed while `LINE_GROUP_ID` is exactly `__DISCOVER__`:
+
+   ```powershell
+   npx wrangler secret put LINE_GROUP_ID
+   npx wrangler deploy
+   npx wrangler tail
+   ```
+
+   At the prompt, paste the real group ID. Send another harmless mention and verify the discovery-only bare group-ID log no longer appears.
+5. Mention the Official Account using LINE's mention UI and include a question. Plain text containing `@name` without LINE mention metadata is intentionally ignored.
+6. Confirm one visible reply and one D1 row with `status='answered'` (see the README smoke check). A message without a mention and a message from another group must produce neither.
 
 ## Delivery guarantees that affect operations
 

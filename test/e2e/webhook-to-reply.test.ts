@@ -72,6 +72,8 @@ describe("signed LINE webhook to completed reply", () => {
         return Response.json({ model: "test/model", choices: [{ message: { content: "可以，記得補水。" } }] });
       }
       if (url.includes("api.line.me")) {
+        const prepared = await db.prepare("SELECT status, prepared_status, answer, model FROM questions WHERE webhook_event_id=?1").bind("event-e2e-1").first();
+        expect(prepared).toEqual({ status: "processing", prepared_status: "answered", answer: "可以，記得補水。", model: "test/model" });
         lineCalls.push(init ?? {});
         return new Response(null, { status: 200 });
       }

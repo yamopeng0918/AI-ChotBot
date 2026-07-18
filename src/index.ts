@@ -9,14 +9,24 @@ import { selectMentionedMessages } from "./line/events";
 import { verifyLineSignature } from "./line/signature";
 import type { LineWebhookBody } from "./line/types";
 import { QuestionsRepository, pseudonymizeUserId } from "./storage/questions";
+import type { ProcessDependencies } from "./jobs/process-message";
+
+type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
+type QuestionsFactory = (env: Env) => QuestionsDependency;
 
 type WorkerDependencies = {
   fetcher?: typeof fetch;
   now?: () => Date;
+  queue?: Pick<Queue<QuestionJob>, "send">;
+  questions?: QuestionsDependency | QuestionsFactory;
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
-const app = new Hono<{ Bindings: Env }>();
+  const app = new Hono<{ Bindings: Env }>();
+  const questionsFor = (env: Env): QuestionsDependency => {
+    if (typeof overrides.questions === "function") return overrides.questions(env);
+    return overrides.questions ?? new QuestionsRepository(env.DB);
+  };
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 
@@ -35,11 +45,20 @@ app.post("/webhooks/line", async (context) => {
     return context.json({ error: "invalid JSON" }, 400);
   }
 
+  if (context.env.LINE_GROUP_ID === "__DISCOVER__") {
+    for (const event of payload.events) {
+      if (event.source?.type === "group" && typeof event.source.groupId === "string") {
+        console.info(event.source.groupId);
+      }
+    }
+    return context.json({ accepted: 0 });
+  }
+
   const messages = selectMentionedMessages(payload, context.env.LINE_GROUP_ID);
   try {
     for (const message of messages) {
       const job: QuestionJob = { ...message, receivedAt: (overrides.now?.() ?? new Date()).toISOString() };
-      await context.env.MESSAGE_QUEUE.send(job);
+      await (overrides.queue ?? context.env.MESSAGE_QUEUE).send(job);
     }
   } catch {
     return context.json({ error: "queue unavailable" }, 503);
@@ -57,7 +76,7 @@ return {
     const dependencies = {
       answerService: new OpenRouterAnswerService(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
-      questions: new QuestionsRepository(env.DB),
+      questions: questionsFor(env),
       pseudonymize: (userId: string | null) => pseudonymizeUserId(userId, env.ANALYTICS_HASH_KEY),
       now: overrides.now,
     };
@@ -72,7 +91,7 @@ return {
     }
   },
   async scheduled(_controller, env) {
-    await new QuestionsRepository(env.DB).purgeExpired((overrides.now?.() ?? new Date()).toISOString());
+    await questionsFor(env).purgeExpired((overrides.now?.() ?? new Date()).toISOString());
   },
 } satisfies ExportedHandler<Env, QuestionJob>;
 }

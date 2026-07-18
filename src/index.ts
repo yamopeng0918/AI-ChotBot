@@ -2,18 +2,15 @@ import { Hono } from "hono";
 
 import { OpenRouterAnswerService } from "./answers/openrouter";
 import type { Env } from "./config";
-import { processQuestion, type QuestionRecorder } from "./jobs/process-message";
+import { processQuestion } from "./jobs/process-message";
 import type { QuestionJob } from "./jobs/types";
-import { LineClient, LineReplyError } from "./line/client";
+import { LineClient } from "./line/client";
 import { selectMentionedMessages } from "./line/events";
 import { verifyLineSignature } from "./line/signature";
 import type { LineWebhookBody } from "./line/types";
+import { QuestionsRepository, pseudonymizeUserId } from "./storage/questions";
 
 const app = new Hono<{ Bindings: Env }>();
-
-const noOpRecorder: QuestionRecorder = {
-  async record() {},
-};
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 
@@ -54,23 +51,22 @@ const worker = {
     const dependencies = {
       answerService: new OpenRouterAnswerService(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
-      recorder: noOpRecorder,
+      questions: new QuestionsRepository(env.DB),
+      pseudonymize: (userId: string | null) => pseudonymizeUserId(userId, env.ANALYTICS_HASH_KEY),
     };
 
     for (const message of batch.messages) {
       try {
-        await processQuestion(message.body, dependencies);
-        message.ack();
-      } catch (error) {
-        if (error instanceof LineReplyError) {
-          message.retry();
-        } else {
-          message.ack();
-        }
+        const result = await processQuestion(message.body, dependencies);
+        if (result.disposition === "ack") message.ack(); else message.retry();
+      } catch {
+        message.retry();
       }
     }
   },
-  async scheduled() {},
+  async scheduled(_controller, env) {
+    await new QuestionsRepository(env.DB).purgeExpired(new Date().toISOString());
+  },
 } satisfies ExportedHandler<Env, QuestionJob>;
 
 export default worker;

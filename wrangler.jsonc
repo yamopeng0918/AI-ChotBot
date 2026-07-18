@@ -3,6 +3,8 @@
   "name": "line-running-community-bot",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-17",
+  "d1_databases": [{ "binding": "DB", "database_name": "line-bot-diagnostics", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }],
+  "triggers": { "crons": ["17 19 * * *"] },
   "queues": {
     "producers": [{ "binding": "MESSAGE_QUEUE", "queue": "line-question-jobs" }],
     "consumers": [{

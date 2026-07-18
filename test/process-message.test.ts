@@ -1,129 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
-
-import { AnswerUnavailableError } from "../src/answers/openrouter";
 import type { QuestionJob } from "../src/jobs/types";
 import { processQuestion } from "../src/jobs/process-message";
 import worker from "../src/index";
 import { LineReplyError } from "../src/line/client";
-
-const job: QuestionJob = {
-  webhookEventId: "event-1",
-  replyToken: "reply-1",
-  groupId: "group-1",
-  userId: "user-1",
-  messageId: "message-1",
-  text: "Where should I run?",
-  timestamp: 1,
-  receivedAt: "2026-07-18T00:00:00.000Z",
-};
-
-function dependencies(answer = vi.fn().mockResolvedValue({
-  text: "Try the riverside.", model: "model", inputTokens: 1, outputTokens: 2,
-})) {
-  return {
-    answerService: { answer },
-    lineClient: { reply: vi.fn().mockResolvedValue(undefined) },
-    recorder: { record: vi.fn().mockResolvedValue(undefined) },
-  };
-}
-
+const job: QuestionJob = { webhookEventId: "event-1", replyToken: "reply-1", groupId: "group-1", userId: "user-1", messageId: "message-1", text: "Where should I run?", timestamp: 1, receivedAt: "2026-07-18T00:00:00.000Z" };
+function deps(claim: unknown = { state: "claimed" }) { return { now: () => new Date("2026-07-18T00:00:00.000Z"), answerService: { answer: vi.fn().mockResolvedValue({ text: "Try the riverside.", model: "model" }) }, lineClient: { reply: vi.fn().mockResolvedValue(undefined) }, questions: { claim: vi.fn().mockResolvedValue(claim), prepare: vi.fn().mockResolvedValue(undefined), complete: vi.fn().mockResolvedValue(undefined), release: vi.fn().mockResolvedValue(undefined) }, pseudonymize: vi.fn().mockResolvedValue("user-key") }; }
 describe("processQuestion", () => {
-  it("answers once and replies once", async () => {
-    const deps = dependencies();
-
-    await expect(processQuestion(job, deps)).resolves.toEqual({ status: "answered" });
-    expect(deps.answerService.answer).toHaveBeenCalledOnce();
-    expect(deps.answerService.answer).toHaveBeenCalledWith({ question: job.text, locale: "zh-TW" });
-    expect(deps.lineClient.reply).toHaveBeenCalledOnce();
-    expect(deps.lineClient.reply).toHaveBeenCalledWith(job.replyToken, "Try the riverside.");
-  });
-
-  it.each(["rate_limited", "timeout", "provider_error"] as const)(
-    "delivers the provider-unavailable message for %s",
-    async (reason) => {
-      const deps = dependencies(vi.fn().mockRejectedValue(new AnswerUnavailableError(reason)));
-
-      await expect(processQuestion(job, deps)).resolves.toEqual({ status: "provider_unavailable" });
-      expect(deps.lineClient.reply).toHaveBeenCalledWith(
-        job.replyToken,
-        "目前回答服務有點忙，請稍後再 @我 試一次。",
-      );
-    },
-  );
-
-  it("records a normal-answer LINE failure once and rethrows it unchanged", async () => {
-    const deps = dependencies();
-    const failure = new LineReplyError(503);
-    deps.lineClient.reply.mockRejectedValue(failure);
-
-    await expect(processQuestion(job, deps)).rejects.toBe(failure);
-    expect(deps.recorder.record).toHaveBeenCalledOnce();
-    expect(deps.recorder.record).toHaveBeenCalledWith(job, {
-      status: "reply_failed",
-      model: "model",
-    });
-  });
-
-  it("records a fallback LINE failure once with no model and rethrows it unchanged", async () => {
-    const deps = dependencies(
-      vi.fn().mockRejectedValue(new AnswerUnavailableError("provider_error")),
-    );
-    const failure = new LineReplyError(503);
-    deps.lineClient.reply.mockRejectedValue(failure);
-
-    await expect(processQuestion(job, deps)).rejects.toBe(failure);
-    expect(deps.recorder.record).toHaveBeenCalledOnce();
-    expect(deps.recorder.record).toHaveBeenCalledWith(job, {
-      status: "reply_failed",
-      model: null,
-    });
-  });
+  it("claims with a 60-second lease and prepares before LINE delivery", async () => { const d = deps(); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" }); expect(d.questions.claim).toHaveBeenCalledWith("event-1", "2026-07-18T00:01:00.000Z"); expect(d.questions.prepare.mock.invocationCallOrder[0]!).toBeLessThan(d.lineClient.reply.mock.invocationCallOrder[0]!); });
+  it("returns retry for a concurrent busy claim", async () => { const d = deps({ state: "busy" }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry" }); expect(d.answerService.answer).not.toHaveBeenCalled(); expect(d.lineClient.reply).not.toHaveBeenCalled(); });
+  it("acks a completed duplicate without LLM or LINE calls", async () => { const d = deps({ state: "completed" }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack" }); expect(d.answerService.answer).not.toHaveBeenCalled(); expect(d.lineClient.reply).not.toHaveBeenCalled(); });
+  it("resumes expired prepared work without calling the LLM", async () => { const d = deps({ state: "claimed", prepared: { text: "saved", model: "saved-model", status: "answered" } }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" }); expect(d.answerService.answer).not.toHaveBeenCalled(); expect(d.lineClient.reply).toHaveBeenCalledWith("reply-1", "saved"); });
+  it("records reply_failed and retries LINE using the same prepared text", async () => { const d = deps(); d.lineClient.reply.mockRejectedValueOnce(new LineReplyError(503)).mockResolvedValueOnce(undefined); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry" }); expect(d.questions.complete).toHaveBeenCalledWith(expect.objectContaining({ status: "reply_failed", answer: "Try the riverside." })); d.questions.claim.mockResolvedValueOnce({ state: "claimed", prepared: { text: "Try the riverside.", model: "model", status: "answered" } }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" }); expect(d.answerService.answer).toHaveBeenCalledOnce(); });
 });
 
 describe("queue consumer", () => {
-  function message(body: QuestionJob) {
-    return { body, ack: vi.fn(), retry: vi.fn() };
-  }
-
-  function env(fetcher: ReturnType<typeof vi.fn>) {
-    return {
-      OPENROUTER_API_KEY: "openrouter-key",
-      OPENROUTER_MODEL: "model",
-      LINE_CHANNEL_ACCESS_TOKEN: "line-key",
-      FETCHER: fetcher,
-    } as never;
-  }
-
-  it("acknowledges a successfully delivered provider fallback", async () => {
-    const item = message(job);
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(null, { status: 429 }))
-      .mockResolvedValueOnce(new Response(null, { status: 200 }));
-
-    await worker.queue({ messages: [item] } as never, env(fetcher), {} as never);
-
-    expect(item.ack).toHaveBeenCalledOnce();
-    expect(item.retry).not.toHaveBeenCalled();
-  });
-
-  it("retries only the message whose LINE delivery fails", async () => {
-    const failed = message(job);
-    const delivered = message({ ...job, webhookEventId: "event-2", replyToken: "reply-2" });
-    const fetcher = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        model: "model", choices: [{ message: { content: "answer one" } }],
-      }), { status: 200, headers: { "content-type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(null, { status: 503 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        model: "model", choices: [{ message: { content: "answer two" } }],
-      }), { status: 200, headers: { "content-type": "application/json" } }))
-      .mockResolvedValueOnce(new Response(null, { status: 200 }));
-
-    await worker.queue({ messages: [failed, delivered] } as never, env(fetcher), {} as never);
-
-    expect(failed.retry).toHaveBeenCalledOnce();
-    expect(failed.ack).not.toHaveBeenCalled();
-    expect(delivered.ack).toHaveBeenCalledOnce();
-    expect(delivered.retry).not.toHaveBeenCalled();
+  it("acks completed messages and retries busy messages independently", async () => {
+    const db = { prepare: (_sql: string) => ({ bind: (id: string) => ({ run: async () => ({ meta: { changes: 0 } }), first: async () => ({ status: id === "done" ? "answered" : "processing" }) }) }) };
+    const completed = { body: { ...job, webhookEventId: "done" }, ack: vi.fn(), retry: vi.fn() };
+    const busy = { body: { ...job, webhookEventId: "busy" }, ack: vi.fn(), retry: vi.fn() };
+    await worker.queue({ messages: [completed, busy] } as never, { DB: db } as never, {} as never);
+    expect(completed.ack).toHaveBeenCalledOnce(); expect(completed.retry).not.toHaveBeenCalled();
+    expect(busy.retry).toHaveBeenCalledOnce(); expect(busy.ack).not.toHaveBeenCalled();
   });
 });

@@ -38,8 +38,9 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
   const record: QuestionRecord = { webhookEventId: job.webhookEventId, userKey, question: job.text, answer: text, status, model, createdAt, expiresAt };
   try { await dependencies.lineClient.reply(job.replyToken, text); }
   catch (error) {
-    // At-least-once retries deliberately reuse the stable LINE replyToken. LINE rejects a token
-    // already accepted, preventing a second visible reply; prepared text is never regenerated.
+    // Redelivery keeps the same replyToken and a replyToken succeeds only once, so retries cannot
+    // create a second visible reply. See https://developers.line.biz/en/docs/messaging-api/receiving-messages/
+    // and https://developers.line.biz/en/reference/messaging-api/#send-reply-message.
     if (error instanceof LineReplyError) { try { await dependencies.questions.complete({ ...record, status: "reply_failed" }, leaseToken); } catch {} return { disposition: "retry", delaySeconds: 1 }; }
     return { disposition: "retry", delaySeconds: 1 };
   }

@@ -20,7 +20,7 @@
 - 密鑰只存在 Worker secrets；程式碼、測試 fixture 與 log 不得輸出密鑰。
 - 免費額度用盡時安全失敗，不進行無限重試。
 - LINE webhook 到 Queue 採至少一次投遞；不得宣稱跨 D1 與 Queue 的原子 exactly-once。
-- 使用者端必須嚴格去重：同一 `webhookEventId` 最多產生一次成功的 LLM 回答與 LINE 回覆；中斷中的工作以具期限的處理租約恢復。
+- 使用者端必須嚴格去重：同一 `webhookEventId` 最多採用並保存一份 LLM 結果，且最多產生一次使用者可見的 LINE 回覆；中斷中的工作以具 fencing token 的限時租約恢復。若 Worker 在租約期間被平台暫停，外部 LLM HTTP 請求可能重疊，但 stale 結果不得保存或送出。LINE 官方保證重送事件的 `replyToken` 不變且只能成功使用一次。
 
 ## Scope Decomposition
 

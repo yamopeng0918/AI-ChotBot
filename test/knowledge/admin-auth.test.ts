@@ -32,4 +32,18 @@ describe("verifyAdminBearer", () => {
       digest.mockRestore();
     },
   );
+
+  test("compares the final byte of both digests", async () => {
+    const actual = new Uint8Array(32);
+    const expected = new Uint8Array(32);
+    expected[31] = 1;
+    const digest = vi.spyOn(crypto.subtle, "digest")
+      .mockResolvedValueOnce(actual.buffer)
+      .mockResolvedValueOnce(expected.buffer);
+
+    await expect(verifyAdminBearer("Bearer candidate", "expected")).resolves.toBe(false);
+
+    expect(digest).toHaveBeenCalledTimes(2);
+    digest.mockRestore();
+  });
 });

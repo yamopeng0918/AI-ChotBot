@@ -1,4 +1,4 @@
-import type { Hono } from "hono";
+import type { Hono, MiddlewareHandler } from "hono";
 
 import type { Env } from "../config";
 import { verifyAdminBearer } from "./admin-auth";
@@ -10,7 +10,7 @@ export function registerKnowledgeAdminRoutes(
   app: Hono<{ Bindings: Env }>,
   repositoryFor: (env: Env) => KnowledgeReader,
 ): void {
-  app.use("/admin/knowledge/*", async (context, next) => {
+  const requireAdmin: MiddlewareHandler<{ Bindings: Env }> = async (context, next) => {
     const authenticated = await verifyAdminBearer(
       context.req.header("authorization"), context.env.ADMIN_API_TOKEN,
     );
@@ -18,9 +18,9 @@ export function registerKnowledgeAdminRoutes(
       return context.json({ error: { code: "unauthorized", message: "Unauthorized" } }, 401);
     }
     await next();
-  });
+  };
 
-  app.get("/admin/knowledge/documents", async (context) => {
+  app.get("/admin/knowledge/documents", requireAdmin, async (context) => {
     try {
       return context.json({ documents: await repositoryFor(context.env).listDocuments() });
     } catch {
@@ -28,7 +28,7 @@ export function registerKnowledgeAdminRoutes(
     }
   });
 
-  app.get("/admin/knowledge/documents/:id", async (context) => {
+  app.get("/admin/knowledge/documents/:id", requireAdmin, async (context) => {
     try {
       const document = await repositoryFor(context.env).getDocument(context.req.param("id"));
       if (!document) {

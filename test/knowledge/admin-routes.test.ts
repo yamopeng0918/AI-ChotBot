@@ -121,6 +121,19 @@ describe("knowledge admin metadata API", () => {
     expect(response.status).toBe(404);
   });
 
+  test.each([
+    ["POST", "/admin/knowledge/files"],
+    ["POST", "/admin/knowledge/urls"],
+    ["POST", "/admin/knowledge/documents/doc/reindex"],
+    ["DELETE", "/admin/knowledge/documents/doc"],
+  ])("leaves unregistered %s %s as 404 without authorization", async (method, path) => {
+    const worker = createWorker();
+    const response = await worker.fetch(
+      new Request(`https://worker.test${path}`, { method }), env, {} as ExecutionContext,
+    );
+    expect(response.status).toBe(404);
+  });
+
   async function request(path: string, method = "GET"): Promise<Response> {
     const worker = createWorker();
     return worker.fetch(new Request(`https://worker.test${path}`, {

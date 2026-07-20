@@ -4,15 +4,26 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-17",
   "d1_databases": [{ "binding": "DB", "database_name": "line-bot-diagnostics", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "line-bot-knowledge-files" }],
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "line-bot-knowledge-bge-m3-1024-cosine" }],
+  "ai": { "binding": "AI" },
   "triggers": { "crons": ["17 19 * * *"] },
   "queues": {
-    "producers": [{ "binding": "MESSAGE_QUEUE", "queue": "line-question-jobs" }],
+    "producers": [
+      { "binding": "MESSAGE_QUEUE", "queue": "line-question-jobs" },
+      { "binding": "INGESTION_QUEUE", "queue": "knowledge-ingestion-jobs" }
+    ],
     "consumers": [{
       "queue": "line-question-jobs",
       "max_batch_size": 5,
       "max_batch_timeout": 2,
       "max_retries": 2,
       "dead_letter_queue": "line-question-jobs-dlq"
+    }, {
+      "queue": "knowledge-ingestion-jobs",
+      "max_batch_size": 1,
+      "max_retries": 3,
+      "dead_letter_queue": "knowledge-ingestion-dlq"
     }]
   }
 }

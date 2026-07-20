@@ -8,7 +8,7 @@ import type { KnowledgeObjectStore } from "./storage";
 import type { IngestionJobMessage } from "./types";
 
 export type KnowledgeReader = Pick<KnowledgeRepository, "listDocuments" | "getDocument">;
-export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "uploadExists" | "createPendingDocumentWithJob" | "failUpload">;
+export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "claimUpload" | "completeUpload" | "failUpload">;
 export type KnowledgeUploadDependencies = {
   repositoryFor: (env: Env) => KnowledgeAdminRepository;
   objectStoreFor: (env: Env) => KnowledgeObjectStore;
@@ -61,7 +61,6 @@ export function registerKnowledgeAdminRoutes(
     const [documentId, jobId] = await Promise.all([stableUuid("knowledge-document:", key), stableUuid("knowledge-job:", key)]);
     const repository = repositoryFor(context.env);
     try {
-      if (await repository.uploadExists(documentId, jobId)) return context.json({ documentId, status: "pending" }, 202);
       const form = await context.req.formData();
       const files = [...form.entries()].filter(([, value]) => value instanceof File);
       const selected = form.getAll("file");
@@ -70,15 +69,18 @@ export function registerKnowledgeAdminRoutes(
       const validated = await (dependencies.validateFile ?? validateKnowledgeFile)(file);
       const r2Key = `${documentId}${validated.extension}`;
       const displayName = sanitizeName(file.name);
-      const store = dependencies.objectStoreFor(context.env);
-      await store.putOriginal(r2Key, file, { originalName: displayName, mimeType: validated.mimeType });
       const createdAt = (dependencies.now?.() ?? new Date()).toISOString();
       const contentHash = hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
-      const created = await repository.createPendingDocumentWithJob(
-        { id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key, contentHash, createdAt },
-        { id: jobId, documentId, operation: "ingest", createdAt },
-      );
-      if (!created.created) return context.json({ documentId, status: "pending" }, 202);
+      const claim = await repository.claimUpload({ id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key, contentHash, createdAt });
+      if (!claim.won) return context.json({ documentId, status: "pending" }, 202);
+      const store = dependencies.objectStoreFor(context.env);
+      try {
+        await store.putOriginal(r2Key, file, { originalName: displayName, mimeType: validated.mimeType });
+        await repository.completeUpload(documentId, { id: jobId, documentId, operation: "ingest", createdAt }, createdAt);
+      } catch {
+        await Promise.allSettled([repository.failUpload(documentId, jobId, "upload_failed", (dependencies.now?.() ?? new Date()).toISOString()), store.deleteOriginal(r2Key)]);
+        return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
+      }
       try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); }
       catch {
         await Promise.allSettled([repository.failUpload(documentId, jobId, "queue_send_failed", (dependencies.now?.() ?? new Date()).toISOString()), store.deleteOriginal(r2Key)]);

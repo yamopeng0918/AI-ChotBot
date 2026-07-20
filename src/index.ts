@@ -10,15 +10,19 @@ import { verifyLineSignature } from "./line/signature";
 import type { LineWebhookBody } from "./line/types";
 import { QuestionsRepository, pseudonymizeUserId } from "./storage/questions";
 import type { ProcessDependencies } from "./jobs/process-message";
+import { registerKnowledgeAdminRoutes, type KnowledgeReader } from "./knowledge/admin-routes";
+import { KnowledgeRepository } from "./knowledge/repository";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
+type KnowledgeFactory = (env: Env) => KnowledgeReader;
 
 type WorkerDependencies = {
   fetcher?: typeof fetch;
   now?: () => Date;
   queue?: Pick<Queue<QuestionJob>, "send">;
   questions?: QuestionsDependency | QuestionsFactory;
+  knowledge?: KnowledgeReader | KnowledgeFactory;
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -27,6 +31,12 @@ export function createWorker(overrides: WorkerDependencies = {}) {
     if (typeof overrides.questions === "function") return overrides.questions(env);
     return overrides.questions ?? new QuestionsRepository(env.DB);
   };
+  const knowledgeFor = (env: Env): KnowledgeReader => {
+    if (typeof overrides.knowledge === "function") return overrides.knowledge(env);
+    return overrides.knowledge ?? new KnowledgeRepository(env.DB);
+  };
+
+registerKnowledgeAdminRoutes(app, knowledgeFor);
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 

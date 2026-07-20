@@ -67,21 +67,38 @@ export class KnowledgeRepository {
     };
   }
 
-  async claimUpload(document: CreatePendingDocumentInput): Promise<{ won: boolean }> {
-    const result = await this.db.prepare(`INSERT OR IGNORE INTO knowledge_documents
+  async claimUpload(document: CreatePendingDocumentInput, jobId: string, now: string): Promise<{ disposition: "winner" | "busy" | "resume_queue" | "duplicate" }> {
+    const staleBefore = new Date(new Date(now).getTime() - 5 * 60_000).toISOString();
+    const result = await this.db.prepare(`INSERT INTO knowledge_documents
       (id, source_type, display_name, source_url, r2_key, content_hash, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?)`).bind(
+      VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?)
+      ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name, source_url=excluded.source_url,
+        r2_key=excluded.r2_key, content_hash=excluded.content_hash, status='processing', error_code=NULL,
+        updated_at=excluded.updated_at
+      WHERE knowledge_documents.status='failed' OR
+        (knowledge_documents.status='processing' AND knowledge_documents.updated_at <= ?)`).bind(
       document.id, document.sourceType, document.displayName, document.sourceUrl, document.r2Key,
-      document.contentHash ?? null, document.createdAt, document.createdAt,
+      document.contentHash ?? null, document.createdAt, now, staleBefore,
     ).run();
-    return { won: result.meta.changes === 1 };
+    if (result.meta.changes === 1) return { disposition: "winner" };
+    const row = await this.db.prepare(`SELECT d.status document_status, j.id job_id, j.status job_status
+      FROM knowledge_documents d LEFT JOIN ingestion_jobs j ON j.document_id=d.id AND j.id=? WHERE d.id=?`)
+      .bind(jobId, document.id).first<{ document_status: KnowledgeDocument["status"]; job_id: string | null; job_status: IngestionJob["status"] | null }>();
+    if (!row) throw new Error("upload claim disappeared");
+    if (row.document_status === "processing") return { disposition: "busy" };
+    if (row.document_status === "pending" && !row.job_id) throw new Error("pending upload missing stable job");
+    if (row.document_status === "pending" && row.job_status === "pending") return { disposition: "resume_queue" };
+    return { disposition: "duplicate" };
   }
 
   async completeUpload(documentId: string, job: CreateJobInput, updatedAt: string): Promise<void> {
     const results = await this.db.batch([
       this.db.prepare(`INSERT INTO ingestion_jobs
         (id, document_id, operation, status, created_at, updated_at)
-        VALUES (?, ?, ?, 'pending', ?, ?)`).bind(job.id, job.documentId, job.operation, job.createdAt, job.createdAt),
+        VALUES (?, ?, ?, 'pending', ?, ?)
+        ON CONFLICT(id) DO UPDATE SET status='pending', error_code=NULL, lease_token=NULL, lease_until=NULL,
+          updated_at=excluded.updated_at WHERE ingestion_jobs.document_id=excluded.document_id AND ingestion_jobs.status='failed'`)
+        .bind(job.id, job.documentId, job.operation, job.createdAt, job.createdAt),
       this.db.prepare(`UPDATE knowledge_documents SET status = 'pending', updated_at = ?
         WHERE id = ? AND status = 'processing'`).bind(updatedAt, documentId),
     ]);

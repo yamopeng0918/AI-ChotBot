@@ -5,10 +5,10 @@ import { KnowledgeRepository } from "../../src/knowledge/repository";
 import { Miniflare } from "miniflare";
 import knowledgeMigration from "../../migrations/0002_knowledge.sql?raw";
 
-function setup(options: { queueFails?: boolean; duplicate?: boolean } = {}) {
+function setup(options: { queueFails?: boolean; duplicate?: boolean; resumeQueue?: boolean } = {}) {
   const order: string[] = [];
   const repository = {
-    listDocuments: vi.fn(), getDocument: vi.fn(), claimUpload: vi.fn(async () => { order.push("claim"); return { won: !options.duplicate }; }),
+    listDocuments: vi.fn(), getDocument: vi.fn(), claimUpload: vi.fn(async () => { order.push("claim"); return { disposition: options.resumeQueue ? "resume_queue" : options.duplicate ? "busy" : "winner" }; }),
     completeUpload: vi.fn(async () => order.push("complete")),
     failUpload: vi.fn(async () => order.push("fail")),
   };
@@ -47,6 +47,12 @@ describe("POST /admin/knowledge/files", () => {
     expect(d.repository.completeUpload).not.toHaveBeenCalled(); expect(d.ingestionQueue.send).not.toHaveBeenCalled();
   });
 
+  test("resumes a pending stable job by re-sending IDs without R2 or another job", async () => {
+    const d = setup({ resumeQueue: true }); const response = await d.upload("resume"); expect(response.status).toBe(202);
+    expect(d.objectStore.putOriginal).not.toHaveBeenCalled(); expect(d.repository.completeUpload).not.toHaveBeenCalled();
+    expect(d.ingestionQueue.send).toHaveBeenCalledWith(expect.objectContaining({ jobId: expect.any(String), documentId: expect.any(String), operation: "ingest" }));
+  });
+
   test("fails metadata, deletes the new object, and hides queue/cleanup errors", async () => {
     const d = setup({ queueFails: true }); d.objectStore.deleteOriginal.mockRejectedValueOnce(new Error("r2 secret"));
     const response = await d.upload(); expect(response.status).toBe(503);
@@ -76,12 +82,28 @@ test("atomically claims a single winner and exposes no job until storage complet
     const repository = new KnowledgeRepository(db); const createdAt = "2026-07-20T00:00:00.000Z";
     const document = { id: "11111111-1111-4111-8111-111111111111", sourceType: "file" as const, displayName: "a.pdf", sourceUrl: null, r2Key: "key.pdf", createdAt };
     const job = { id: "22222222-2222-4222-8222-222222222222", documentId: document.id, operation: "ingest" as const, createdAt };
-    const claims = await Promise.all([repository.claimUpload(document), repository.claimUpload({ ...document, displayName: "loser.png", r2Key: "loser.png", contentHash: "loser" })]);
-    expect(claims.filter((claim) => claim.won)).toHaveLength(1);
+    const claims = await Promise.all([repository.claimUpload(document, job.id, createdAt), repository.claimUpload({ ...document, displayName: "loser.png", r2Key: "loser.png", contentHash: "loser" }, job.id, createdAt)]);
+    expect(claims.filter((claim) => claim.disposition === "winner")).toHaveLength(1);
     expect((await db.prepare("SELECT COUNT(*) AS count FROM ingestion_jobs").first<{count:number}>())!.count).toBe(0);
     await repository.completeUpload(document.id, job, createdAt);
     expect((await db.prepare("SELECT COUNT(*) AS count FROM ingestion_jobs").first<{count:number}>())!.count).toBe(1);
     expect(await repository.getDocument(document.id)).toEqual(expect.objectContaining({ displayName: "a.pdf", r2Key: "key.pdf", status: "pending" }));
+  } finally { await mf.dispose(); }
+});
+
+test("D1 upload claim distinguishes fresh busy, stale reclaim, and pending-job queue resume", async () => {
+  const mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok') } }", d1Databases: ["DB"] });
+  try {
+    const db = await mf.getD1Database("DB"); await db.batch(knowledgeMigration.split(";").map((s) => s.trim()).filter(Boolean).map((s) => db.prepare(s)));
+    const repository = new KnowledgeRepository(db); const id = "33333333-3333-4333-8333-333333333333"; const jobId = "44444444-4444-4444-8444-444444444444";
+    const first = { id, sourceType: "file" as const, displayName: "old.pdf", sourceUrl: null, r2Key: `${id}.pdf`, contentHash: "old", createdAt: "2026-07-20T00:00:00.000Z" };
+    await expect(repository.claimUpload(first, jobId, "2026-07-20T00:00:00.000Z")).resolves.toEqual({ disposition: "winner" });
+    await expect(repository.claimUpload({ ...first, displayName: "busy.png" }, jobId, "2026-07-20T00:04:59.999Z")).resolves.toEqual({ disposition: "busy" });
+    const stale = { ...first, displayName: "new.png", r2Key: `${id}.png`, contentHash: "new" };
+    await expect(repository.claimUpload(stale, jobId, "2026-07-20T00:05:00.000Z")).resolves.toEqual({ disposition: "winner" });
+    expect(await repository.getDocument(id)).toEqual(expect.objectContaining({ displayName: "new.png", r2Key: `${id}.png`, contentHash: "new" }));
+    await repository.completeUpload(id, { id: jobId, documentId: id, operation: "ingest", createdAt: "2026-07-20T00:05:00.000Z" }, "2026-07-20T00:05:00.000Z");
+    await expect(repository.claimUpload(stale, jobId, "2026-07-20T00:06:00.000Z")).resolves.toEqual({ disposition: "resume_queue" });
   } finally { await mf.dispose(); }
 });
 

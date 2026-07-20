@@ -71,8 +71,13 @@ export function registerKnowledgeAdminRoutes(
       const displayName = sanitizeName(file.name);
       const createdAt = (dependencies.now?.() ?? new Date()).toISOString();
       const contentHash = hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
-      const claim = await repository.claimUpload({ id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key, contentHash, createdAt });
-      if (!claim.won) return context.json({ documentId, status: "pending" }, 202);
+      const claim = await repository.claimUpload({ id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key, contentHash, createdAt }, jobId, createdAt);
+      if (claim.disposition === "resume_queue") {
+        try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); }
+        catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
+        return context.json({ documentId, status: "pending" }, 202);
+      }
+      if (claim.disposition !== "winner") return context.json({ documentId, status: "pending" }, 202);
       const store = dependencies.objectStoreFor(context.env);
       try {
         await store.putOriginal(r2Key, file, { originalName: displayName, mimeType: validated.mimeType });

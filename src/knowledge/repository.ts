@@ -67,6 +67,47 @@ export class KnowledgeRepository {
     };
   }
 
+  async uploadExists(documentId: string, jobId: string): Promise<boolean> {
+    const row = await this.db.prepare(`SELECT
+      EXISTS(SELECT 1 FROM knowledge_documents WHERE id = ?) AS document_exists,
+      EXISTS(SELECT 1 FROM ingestion_jobs WHERE id = ? AND document_id = ?) AS job_exists`)
+      .bind(documentId, jobId, documentId).first<{ document_exists: number; job_exists: number }>();
+    if (!row) throw new Error("upload lookup failed");
+    if (Boolean(row.document_exists) !== Boolean(row.job_exists)) throw new Error("inconsistent upload metadata");
+    return Boolean(row.document_exists);
+  }
+
+  async createPendingDocumentWithJob(document: CreatePendingDocumentInput, job: CreateJobInput): Promise<{ created: boolean }> {
+    if (await this.uploadExists(document.id, job.id)) return { created: false };
+    try {
+      await this.db.batch([
+        this.db.prepare(`INSERT INTO knowledge_documents
+          (id, source_type, display_name, source_url, r2_key, content_hash, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`).bind(
+          document.id, document.sourceType, document.displayName, document.sourceUrl, document.r2Key,
+          document.contentHash ?? null, document.createdAt, document.createdAt,
+        ),
+        this.db.prepare(`INSERT INTO ingestion_jobs
+          (id, document_id, operation, status, created_at, updated_at)
+          VALUES (?, ?, ?, 'pending', ?, ?)`).bind(job.id, job.documentId, job.operation, job.createdAt, job.createdAt),
+      ]);
+      return { created: true };
+    } catch (error) {
+      if (await this.uploadExists(document.id, job.id)) return { created: false };
+      throw error;
+    }
+  }
+
+  async failUpload(documentId: string, jobId: string, errorCode: string, updatedAt: string): Promise<void> {
+    await this.db.batch([
+      this.db.prepare(`UPDATE ingestion_jobs SET status = 'failed', error_code = ?,
+        lease_token = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND document_id = ?`)
+        .bind(errorCode, updatedAt, jobId, documentId),
+      this.db.prepare(`UPDATE knowledge_documents SET status = 'failed', error_code = ?, updated_at = ? WHERE id = ?`)
+        .bind(errorCode, updatedAt, documentId),
+    ]);
+  }
+
   async markDeleting(id: string): Promise<boolean> {
     const result = await this.db.prepare(
       "UPDATE knowledge_documents SET status = 'deleting' WHERE id = ?",

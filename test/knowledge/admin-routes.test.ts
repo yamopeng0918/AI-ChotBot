@@ -112,7 +112,6 @@ describe("knowledge admin metadata API", () => {
   });
 
   test.each([
-    ["POST", "/admin/knowledge/files"],
     ["POST", "/admin/knowledge/urls"],
     ["POST", "/admin/knowledge/documents/doc/reindex"],
     ["DELETE", "/admin/knowledge/documents/doc"],
@@ -122,7 +121,6 @@ describe("knowledge admin metadata API", () => {
   });
 
   test.each([
-    ["POST", "/admin/knowledge/files"],
     ["POST", "/admin/knowledge/urls"],
     ["POST", "/admin/knowledge/documents/doc/reindex"],
     ["DELETE", "/admin/knowledge/documents/doc"],

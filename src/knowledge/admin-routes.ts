@@ -3,13 +3,25 @@ import type { Hono, MiddlewareHandler } from "hono";
 import type { Env } from "../config";
 import { verifyAdminBearer } from "./admin-auth";
 import type { KnowledgeRepository } from "./repository";
+import { KnowledgeFileError, validateKnowledgeFile, type ValidatedKnowledgeFile } from "./file-validation";
+import type { KnowledgeObjectStore } from "./storage";
+import type { IngestionJobMessage } from "./types";
 
 export type KnowledgeReader = Pick<KnowledgeRepository, "listDocuments" | "getDocument">;
+export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "uploadExists" | "createPendingDocumentWithJob" | "failUpload">;
+export type KnowledgeUploadDependencies = {
+  repositoryFor: (env: Env) => KnowledgeAdminRepository;
+  objectStoreFor: (env: Env) => KnowledgeObjectStore;
+  queueFor: (env: Env) => Pick<Queue<IngestionJobMessage>, "send">;
+  validateFile?: (file: File) => Promise<ValidatedKnowledgeFile>;
+  now?: () => Date;
+};
 
 export function registerKnowledgeAdminRoutes(
   app: Hono<{ Bindings: Env }>,
-  repositoryFor: (env: Env) => KnowledgeReader,
+  dependencies: KnowledgeUploadDependencies,
 ): void {
+  const { repositoryFor } = dependencies;
   const requireAdmin: MiddlewareHandler<{ Bindings: Env }> = async (context, next) => {
     const authenticated = await verifyAdminBearer(
       context.req.header("authorization"), context.env.ADMIN_API_TOKEN,
@@ -41,4 +53,50 @@ export function registerKnowledgeAdminRoutes(
       return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
     }
   });
+
+  app.post("/admin/knowledge/files", requireAdmin, async (context) => {
+    const rawKey = context.req.header("Idempotency-Key");
+    const key = rawKey?.trim() ?? "";
+    if (!key || new TextEncoder().encode(key).byteLength > 128) return context.json({ error: { code: "invalid_idempotency_key", message: "Invalid Idempotency-Key" } }, 400);
+    const [documentId, jobId] = await Promise.all([stableUuid("knowledge-document:", key), stableUuid("knowledge-job:", key)]);
+    const repository = repositoryFor(context.env);
+    try {
+      if (await repository.uploadExists(documentId, jobId)) return context.json({ documentId, status: "pending" }, 202);
+      const form = await context.req.formData();
+      const files = [...form.entries()].filter(([, value]) => value instanceof File);
+      const selected = form.getAll("file");
+      if (files.length !== 1 || selected.length !== 1 || !(selected[0] instanceof File)) throw new KnowledgeFileError("single_file_required");
+      const file = selected[0];
+      const validated = await (dependencies.validateFile ?? validateKnowledgeFile)(file);
+      const r2Key = `${documentId}${validated.extension}`;
+      const displayName = sanitizeName(file.name);
+      const store = dependencies.objectStoreFor(context.env);
+      await store.putOriginal(r2Key, file, { originalName: displayName, mimeType: validated.mimeType });
+      const createdAt = (dependencies.now?.() ?? new Date()).toISOString();
+      const contentHash = hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
+      const created = await repository.createPendingDocumentWithJob(
+        { id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key, contentHash, createdAt },
+        { id: jobId, documentId, operation: "ingest", createdAt },
+      );
+      if (!created.created) return context.json({ documentId, status: "pending" }, 202);
+      try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); }
+      catch {
+        await Promise.allSettled([repository.failUpload(documentId, jobId, "queue_send_failed", (dependencies.now?.() ?? new Date()).toISOString()), store.deleteOriginal(r2Key)]);
+        return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503);
+      }
+      return context.json({ documentId, status: "pending" }, 202);
+    } catch (error) {
+      if (error instanceof KnowledgeFileError) return context.json({ error: { code: error.code, message: errorMessage(error.code) } }, 400);
+      return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
+    }
+  });
 }
+
+async function stableUuid(namespace: string, key: string): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(namespace + key))).slice(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const value = hex(bytes); return `${value.slice(0,8)}-${value.slice(8,12)}-${value.slice(12,16)}-${value.slice(16,20)}-${value.slice(20)}`;
+}
+function hex(value: ArrayBuffer | Uint8Array): string { return [...(value instanceof Uint8Array ? value : new Uint8Array(value))].map((byte) => byte.toString(16).padStart(2,"0")).join(""); }
+function sanitizeName(value: string): string { return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ""); }
+function errorMessage(code: KnowledgeFileError["code"]): string { return code === "single_file_required" ? "Single file required" : code.split("_").map((part) => part[0]!.toUpperCase() + part.slice(1)).join(" "); }

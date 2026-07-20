@@ -10,19 +10,24 @@ import { verifyLineSignature } from "./line/signature";
 import type { LineWebhookBody } from "./line/types";
 import { QuestionsRepository, pseudonymizeUserId } from "./storage/questions";
 import type { ProcessDependencies } from "./jobs/process-message";
-import { registerKnowledgeAdminRoutes, type KnowledgeReader } from "./knowledge/admin-routes";
+import { registerKnowledgeAdminRoutes, type KnowledgeAdminRepository } from "./knowledge/admin-routes";
 import { KnowledgeRepository } from "./knowledge/repository";
+import { R2KnowledgeObjectStore, type KnowledgeObjectStore } from "./knowledge/storage";
+import type { ValidatedKnowledgeFile } from "./knowledge/file-validation";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
-type KnowledgeFactory = (env: Env) => KnowledgeReader;
+type KnowledgeFactory = (env: Env) => KnowledgeAdminRepository;
 
 type WorkerDependencies = {
   fetcher?: typeof fetch;
   now?: () => Date;
   queue?: Pick<Queue<QuestionJob>, "send">;
   questions?: QuestionsDependency | QuestionsFactory;
-  knowledge?: KnowledgeReader | KnowledgeFactory;
+  knowledge?: KnowledgeAdminRepository | KnowledgeFactory;
+  objectStore?: KnowledgeObjectStore | ((env: Env) => KnowledgeObjectStore);
+  ingestionQueue?: Pick<Queue<import("./knowledge/types").IngestionJobMessage>, "send">;
+  validateFile?: (file: File) => Promise<ValidatedKnowledgeFile>;
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -31,12 +36,13 @@ export function createWorker(overrides: WorkerDependencies = {}) {
     if (typeof overrides.questions === "function") return overrides.questions(env);
     return overrides.questions ?? new QuestionsRepository(env.DB);
   };
-  const knowledgeFor = (env: Env): KnowledgeReader => {
+  const knowledgeFor = (env: Env): KnowledgeAdminRepository => {
     if (typeof overrides.knowledge === "function") return overrides.knowledge(env);
     return overrides.knowledge ?? new KnowledgeRepository(env.DB);
   };
+  const objectStoreFor = (env: Env): KnowledgeObjectStore => typeof overrides.objectStore === "function" ? overrides.objectStore(env) : overrides.objectStore ?? new R2KnowledgeObjectStore(env.FILES);
 
-registerKnowledgeAdminRoutes(app, knowledgeFor);
+registerKnowledgeAdminRoutes(app, { repositoryFor: knowledgeFor, objectStoreFor, queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE, validateFile: overrides.validateFile, now: overrides.now });
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 

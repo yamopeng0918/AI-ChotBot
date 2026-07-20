@@ -4,12 +4,13 @@ import { createWorker } from "../../src/index";
 import { KnowledgeRepository } from "../../src/knowledge/repository";
 import { Miniflare } from "miniflare";
 import knowledgeMigration from "../../migrations/0002_knowledge.sql?raw";
+import uploadClaimMigration from "../../migrations/0003_upload_claim_fencing.sql?raw";
 
 function setup(options: { queueFails?: boolean; duplicate?: boolean; resumeQueue?: boolean } = {}) {
   const order: string[] = [];
   const repository = {
-    listDocuments: vi.fn(), getDocument: vi.fn(), claimUpload: vi.fn(async () => { order.push("claim"); return { disposition: options.resumeQueue ? "resume_queue" : options.duplicate ? "busy" : "winner" }; }),
-    completeUpload: vi.fn(async () => order.push("complete")),
+    listDocuments: vi.fn(), getDocument: vi.fn(), claimUpload: vi.fn(async () => { order.push("claim"); return options.resumeQueue ? { disposition: "resume_queue" } : options.duplicate ? { disposition: "busy" } : { disposition: "winner", token: "claim-token", r2Key: "claimed.pdf", previousR2Key: null }; }),
+    completeUpload: vi.fn(async () => { order.push("complete"); return true; }), clearUploadClaim: vi.fn(),
     failUpload: vi.fn(async () => order.push("fail")),
   };
   const objectStore = {
@@ -35,7 +36,7 @@ describe("POST /admin/knowledge/files", () => {
     expect(body.documentId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[45][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(d.order).toEqual(["validate", "claim", "r2", "complete", "queue"]);
     const key = (d.objectStore.putOriginal.mock.calls as unknown as [string, Blob, object][])[0]![0];
-    expect(key).toBe(`${body.documentId}.pdf`); expect(key).not.toContain("original");
+    expect(key).toBe("claimed.pdf"); expect(key).not.toContain("original");
     expect(d.ingestionQueue.send).toHaveBeenCalledWith(expect.objectContaining({ documentId: body.documentId, operation: "ingest", jobId: expect.any(String) }));
     expect(JSON.stringify(d.ingestionQueue.send.mock.calls)).not.toMatch(/original|PDF|admin/);
   });
@@ -57,7 +58,7 @@ describe("POST /admin/knowledge/files", () => {
     const d = setup({ queueFails: true }); d.objectStore.deleteOriginal.mockRejectedValueOnce(new Error("r2 secret"));
     const response = await d.upload(); expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: { code: "queue_unavailable", message: "Queue unavailable" } });
-    expect(d.repository.failUpload).toHaveBeenCalledWith(expect.any(String), expect.any(String), "queue_send_failed", "2026-07-20T00:00:00.000Z");
+    expect(d.repository.failUpload).toHaveBeenCalledWith(expect.any(String), expect.any(String), "queue_send_failed", "2026-07-20T00:00:00.000Z", "claim-token");
     expect(d.objectStore.deleteOriginal).toHaveBeenCalled();
   });
 
@@ -78,39 +79,45 @@ test("atomically claims a single winner and exposes no job until storage complet
   const mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok') } }", d1Databases: ["DB"] });
   try {
     const db = await mf.getD1Database("DB");
-    await db.batch(knowledgeMigration.split(";").map((s) => s.trim()).filter(Boolean).map((s) => db.prepare(s)));
+    await applyMigrations(db);
     const repository = new KnowledgeRepository(db); const createdAt = "2026-07-20T00:00:00.000Z";
     const document = { id: "11111111-1111-4111-8111-111111111111", sourceType: "file" as const, displayName: "a.pdf", sourceUrl: null, r2Key: "key.pdf", createdAt };
     const job = { id: "22222222-2222-4222-8222-222222222222", documentId: document.id, operation: "ingest" as const, createdAt };
-    const claims = await Promise.all([repository.claimUpload(document, job.id, createdAt), repository.claimUpload({ ...document, displayName: "loser.png", r2Key: "loser.png", contentHash: "loser" }, job.id, createdAt)]);
+    const claims = await Promise.all([repository.claimUpload(document, job.id, createdAt, ".pdf"), repository.claimUpload({ ...document, displayName: "loser.png", r2Key: "loser.png", contentHash: "loser" }, job.id, createdAt, ".png")]);
     expect(claims.filter((claim) => claim.disposition === "winner")).toHaveLength(1);
     expect((await db.prepare("SELECT COUNT(*) AS count FROM ingestion_jobs").first<{count:number}>())!.count).toBe(0);
-    await repository.completeUpload(document.id, job, createdAt);
+    const winner = claims.find((claim) => claim.disposition === "winner")! as Extract<(typeof claims)[number],{disposition:"winner"}>;
+    await repository.completeUpload(document.id, job, winner.token, createdAt);
     expect((await db.prepare("SELECT COUNT(*) AS count FROM ingestion_jobs").first<{count:number}>())!.count).toBe(1);
-    expect(await repository.getDocument(document.id)).toEqual(expect.objectContaining({ displayName: "a.pdf", r2Key: "key.pdf", status: "pending" }));
+    expect(await repository.getDocument(document.id)).toEqual(expect.objectContaining({ displayName: claims[0]!.disposition === "winner" ? "a.pdf" : "loser.png", r2Key: winner.r2Key, status: "pending" }));
   } finally { await mf.dispose(); }
 });
 
 test("D1 upload claim distinguishes fresh busy, stale reclaim, and pending-job queue resume", async () => {
   const mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok') } }", d1Databases: ["DB"] });
   try {
-    const db = await mf.getD1Database("DB"); await db.batch(knowledgeMigration.split(";").map((s) => s.trim()).filter(Boolean).map((s) => db.prepare(s)));
+    const db = await mf.getD1Database("DB"); await applyMigrations(db);
     const repository = new KnowledgeRepository(db); const id = "33333333-3333-4333-8333-333333333333"; const jobId = "44444444-4444-4444-8444-444444444444";
     const first = { id, sourceType: "file" as const, displayName: "old.pdf", sourceUrl: null, r2Key: `${id}.pdf`, contentHash: "old", createdAt: "2026-07-20T00:00:00.000Z" };
-    await expect(repository.claimUpload(first, jobId, "2026-07-20T00:00:00.000Z")).resolves.toEqual({ disposition: "winner" });
-    await expect(repository.claimUpload({ ...first, displayName: "busy.png" }, jobId, "2026-07-20T00:04:59.999Z")).resolves.toEqual({ disposition: "busy" });
+    const claimed = await repository.claimUpload(first, jobId, "2026-07-20T00:00:00.000Z", ".pdf"); expect(claimed).toEqual(expect.objectContaining({ disposition: "winner", token: expect.any(String) }));
+    await expect(repository.claimUpload({ ...first, displayName: "busy.png" }, jobId, "2026-07-20T00:04:59.999Z", ".png")).resolves.toEqual({ disposition: "busy" });
     const stale = { ...first, displayName: "new.png", r2Key: `${id}.png`, contentHash: "new" };
-    await expect(repository.claimUpload(stale, jobId, "2026-07-20T00:05:00.000Z")).resolves.toEqual({ disposition: "winner" });
-    expect(await repository.getDocument(id)).toEqual(expect.objectContaining({ displayName: "new.png", r2Key: `${id}.png`, contentHash: "new" }));
-    await repository.completeUpload(id, { id: jobId, documentId: id, operation: "ingest", createdAt: "2026-07-20T00:05:00.000Z" }, "2026-07-20T00:05:00.000Z");
-    await expect(repository.claimUpload(stale, jobId, "2026-07-20T00:06:00.000Z")).resolves.toEqual({ disposition: "resume_queue" });
+    const reclaimed = await repository.claimUpload(stale, jobId, "2026-07-20T00:05:00.000Z", ".png"); expect(reclaimed).toEqual(expect.objectContaining({ disposition: "winner", previousR2Key: expect.any(String) }));
+    expect(await repository.getDocument(id)).toEqual(expect.objectContaining({ displayName: "new.png", contentHash: "new" }));
+    if (reclaimed.disposition !== "winner" || claimed.disposition !== "winner") throw new Error("expected winner");
+    const objects=new Map<string,string>(); if(reclaimed.previousR2Key)objects.delete(reclaimed.previousR2Key);objects.set(reclaimed.r2Key,"new-content");objects.set(claimed.r2Key,"late-old-content");
+    await expect(repository.completeUpload(id, { id: jobId, documentId: id, operation: "ingest", createdAt: "2026-07-20T00:05:00.000Z" }, claimed.token, "2026-07-20T00:05:00.000Z")).resolves.toBe(false);
+    objects.delete(claimed.r2Key);
+    await repository.completeUpload(id, { id: jobId, documentId: id, operation: "ingest", createdAt: "2026-07-20T00:05:00.000Z" }, reclaimed.token, "2026-07-20T00:05:00.000Z");
+    expect([...objects]).toEqual([[reclaimed.r2Key,"new-content"]]);expect(await repository.getDocument(id)).toEqual(expect.objectContaining({r2Key:reclaimed.r2Key,contentHash:"new",status:"pending"}));
+    await expect(repository.claimUpload(stale, jobId, "2026-07-20T00:06:00.000Z", ".png")).resolves.toEqual({ disposition: "resume_queue" });
   } finally { await mf.dispose(); }
 });
 
 test("concurrent same-key uploads with different content/extensions have one R2 winner matching D1", async () => {
   const mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok') } }", d1Databases: ["DB"] });
   try {
-    const db = await mf.getD1Database("DB"); await db.batch(knowledgeMigration.split(";").map((s) => s.trim()).filter(Boolean).map((s) => db.prepare(s)));
+    const db = await mf.getD1Database("DB"); await applyMigrations(db);
     const puts: Array<{ key: string; body: string }> = []; const queue = { send: vi.fn(async () => ({ outcome: "ok" })) };
     const store = { putOriginal: vi.fn(async (key: string, body: Blob) => { puts.push({ key, body: await body.text() }); }), getOriginal: vi.fn(), deleteOriginal: vi.fn() };
     const worker = createWorker({ knowledge: new KnowledgeRepository(db), objectStore: store as never, ingestionQueue: queue as never,
@@ -127,3 +134,4 @@ test("concurrent same-key uploads with different content/extensions have one R2 
 
 function validForm() { const form = new FormData(); form.append("file", new File(["%PDF-1.7"], "ori\u0000ginal.pdf", { type: "application/pdf" })); return form; }
 async function sha256(value: string) { return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map((b) => b.toString(16).padStart(2,"0")).join(""); }
+async function applyMigrations(db:D1Database){for(const sql of [knowledgeMigration,uploadClaimMigration])await db.batch(sql.split(";").map((s)=>s.trim()).filter(Boolean).map((s)=>db.prepare(s)));}

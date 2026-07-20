@@ -8,7 +8,7 @@ import type { KnowledgeObjectStore } from "./storage";
 import type { IngestionJobMessage } from "./types";
 
 export type KnowledgeReader = Pick<KnowledgeRepository, "listDocuments" | "getDocument">;
-export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "claimUpload" | "completeUpload" | "failUpload">;
+export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "claimUpload" | "completeUpload" | "failUpload" | "clearUploadClaim">;
 export type KnowledgeUploadDependencies = {
   repositoryFor: (env: Env) => KnowledgeAdminRepository;
   objectStoreFor: (env: Env) => KnowledgeObjectStore;
@@ -67,30 +67,33 @@ export function registerKnowledgeAdminRoutes(
       if (files.length !== 1 || selected.length !== 1 || !(selected[0] instanceof File)) throw new KnowledgeFileError("single_file_required");
       const file = selected[0];
       const validated = await (dependencies.validateFile ?? validateKnowledgeFile)(file);
-      const r2Key = `${documentId}${validated.extension}`;
       const displayName = sanitizeName(file.name);
       const createdAt = (dependencies.now?.() ?? new Date()).toISOString();
       const contentHash = hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
-      const claim = await repository.claimUpload({ id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key, contentHash, createdAt }, jobId, createdAt);
+      const claim = await repository.claimUpload({ id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key: null, contentHash, createdAt }, jobId, createdAt, validated.extension);
       if (claim.disposition === "resume_queue") {
         try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); }
         catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
         return context.json({ documentId, status: "pending" }, 202);
       }
       if (claim.disposition !== "winner") return context.json({ documentId, status: "pending" }, 202);
+      const { token, r2Key, previousR2Key } = claim;
       const store = dependencies.objectStoreFor(context.env);
       try {
+        if (previousR2Key && previousR2Key !== r2Key) await Promise.allSettled([store.deleteOriginal(previousR2Key)]);
         await store.putOriginal(r2Key, file, { originalName: displayName, mimeType: validated.mimeType });
-        await repository.completeUpload(documentId, { id: jobId, documentId, operation: "ingest", createdAt }, createdAt);
+        const finalized = await repository.completeUpload(documentId, { id: jobId, documentId, operation: "ingest", createdAt }, token, createdAt);
+        if (!finalized) { await Promise.allSettled([store.deleteOriginal(r2Key)]); return context.json({ documentId, status: "pending" }, 202); }
       } catch {
-        await Promise.allSettled([repository.failUpload(documentId, jobId, "upload_failed", (dependencies.now?.() ?? new Date()).toISOString()), store.deleteOriginal(r2Key)]);
+        await Promise.allSettled([repository.failUpload(documentId, jobId, "upload_failed", (dependencies.now?.() ?? new Date()).toISOString(), token), store.deleteOriginal(r2Key)]);
         return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
       }
       try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); }
       catch {
-        await Promise.allSettled([repository.failUpload(documentId, jobId, "queue_send_failed", (dependencies.now?.() ?? new Date()).toISOString()), store.deleteOriginal(r2Key)]);
+        await Promise.allSettled([repository.failUpload(documentId, jobId, "queue_send_failed", (dependencies.now?.() ?? new Date()).toISOString(), token), store.deleteOriginal(r2Key)]);
         return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503);
       }
+      await repository.clearUploadClaim(documentId, token, (dependencies.now?.() ?? new Date()).toISOString());
       return context.json({ documentId, status: "pending" }, 202);
     } catch (error) {
       if (error instanceof KnowledgeFileError) return context.json({ error: { code: error.code, message: errorMessage(error.code) } }, 400);

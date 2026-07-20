@@ -28,7 +28,7 @@ const documentColumns = `id, source_type, display_name, source_url, r2_key, acti
   content_hash, page_count, error_code, status, created_at, updated_at`;
 
 export class KnowledgeRepository {
-  constructor(private readonly db: D1Database) {}
+  constructor(private readonly db: D1Database, private readonly claimToken = () => crypto.randomUUID()) {}
 
   async listDocuments(): Promise<KnowledgeDocument[]> {
     const result = await this.db.prepare(
@@ -67,20 +67,25 @@ export class KnowledgeRepository {
     };
   }
 
-  async claimUpload(document: CreatePendingDocumentInput, jobId: string, now: string): Promise<{ disposition: "winner" | "busy" | "resume_queue" | "duplicate" }> {
+  async claimUpload(document: CreatePendingDocumentInput, jobId: string, now: string, extension: string): Promise<{ disposition: "winner"; token: string; r2Key: string; previousR2Key: string | null } | { disposition: "busy" | "resume_queue" | "duplicate" }> {
     const staleBefore = new Date(new Date(now).getTime() - 5 * 60_000).toISOString();
+    const until = new Date(new Date(now).getTime() + 5 * 60_000).toISOString();
+    const token = this.claimToken();
+    const tokenHash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)))].slice(0, 8).map((b) => b.toString(16).padStart(2,"0")).join("");
+    const r2Key = `${document.id}-${tokenHash}${extension}`;
+    const previous = await this.db.prepare("SELECT r2_key FROM knowledge_documents WHERE id=?").bind(document.id).first<{r2_key:string|null}>();
     const result = await this.db.prepare(`INSERT INTO knowledge_documents
-      (id, source_type, display_name, source_url, r2_key, content_hash, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?)
+      (id, source_type, display_name, source_url, r2_key, content_hash, status, created_at, updated_at, upload_claim_token, upload_claim_until)
+      VALUES (?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name, source_url=excluded.source_url,
         r2_key=excluded.r2_key, content_hash=excluded.content_hash, status='processing', error_code=NULL,
-        updated_at=excluded.updated_at
+        upload_claim_token=excluded.upload_claim_token, upload_claim_until=excluded.upload_claim_until, updated_at=excluded.updated_at
       WHERE knowledge_documents.status='failed' OR
         (knowledge_documents.status='processing' AND knowledge_documents.updated_at <= ?)`).bind(
-      document.id, document.sourceType, document.displayName, document.sourceUrl, document.r2Key,
-      document.contentHash ?? null, document.createdAt, now, staleBefore,
+      document.id, document.sourceType, document.displayName, document.sourceUrl, r2Key,
+      document.contentHash ?? null, document.createdAt, now, token, until, staleBefore,
     ).run();
-    if (result.meta.changes === 1) return { disposition: "winner" };
+    if (result.meta.changes === 1) return { disposition: "winner", token, r2Key, previousR2Key: previous?.r2_key ?? null };
     const row = await this.db.prepare(`SELECT d.status document_status, j.id job_id, j.status job_status
       FROM knowledge_documents d LEFT JOIN ingestion_jobs j ON j.document_id=d.id AND j.id=? WHERE d.id=?`)
       .bind(jobId, document.id).first<{ document_status: KnowledgeDocument["status"]; job_id: string | null; job_status: IngestionJob["status"] | null }>();
@@ -91,28 +96,38 @@ export class KnowledgeRepository {
     return { disposition: "duplicate" };
   }
 
-  async completeUpload(documentId: string, job: CreateJobInput, updatedAt: string): Promise<void> {
+  async completeUpload(documentId: string, job: CreateJobInput, token: string, updatedAt: string): Promise<boolean> {
     const results = await this.db.batch([
       this.db.prepare(`INSERT INTO ingestion_jobs
         (id, document_id, operation, status, created_at, updated_at)
-        VALUES (?, ?, ?, 'pending', ?, ?)
+        SELECT ?, ?, ?, 'pending', ?, ? WHERE EXISTS
+          (SELECT 1 FROM knowledge_documents WHERE id=? AND status='processing' AND upload_claim_token=?)
         ON CONFLICT(id) DO UPDATE SET status='pending', error_code=NULL, lease_token=NULL, lease_until=NULL,
           updated_at=excluded.updated_at WHERE ingestion_jobs.document_id=excluded.document_id AND ingestion_jobs.status='failed'`)
-        .bind(job.id, job.documentId, job.operation, job.createdAt, job.createdAt),
+        .bind(job.id, job.documentId, job.operation, job.createdAt, job.createdAt, documentId, token),
       this.db.prepare(`UPDATE knowledge_documents SET status = 'pending', updated_at = ?
-        WHERE id = ? AND status = 'processing'`).bind(updatedAt, documentId),
+        WHERE id = ? AND status = 'processing' AND upload_claim_token=?`).bind(updatedAt, documentId, token),
     ]);
-    if (results[1]!.meta.changes !== 1) throw new Error("upload claim lost");
+    return results[0]!.meta.changes === 1 && results[1]!.meta.changes === 1;
   }
 
-  async failUpload(documentId: string, jobId: string, errorCode: string, updatedAt: string): Promise<void> {
+  async failUpload(documentId: string, jobId: string, errorCode: string, updatedAt: string, token: string): Promise<boolean> {
     await this.db.batch([
       this.db.prepare(`UPDATE ingestion_jobs SET status = 'failed', error_code = ?,
-        lease_token = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND document_id = ?`)
-        .bind(errorCode, updatedAt, jobId, documentId),
-      this.db.prepare(`UPDATE knowledge_documents SET status = 'failed', error_code = ?, updated_at = ? WHERE id = ?`)
-        .bind(errorCode, updatedAt, documentId),
+        lease_token = NULL, lease_until = NULL, updated_at = ? WHERE id = ? AND document_id = ? AND EXISTS
+          (SELECT 1 FROM knowledge_documents WHERE id=? AND upload_claim_token=?)`)
+        .bind(errorCode, updatedAt, jobId, documentId, documentId, token),
+      this.db.prepare(`UPDATE knowledge_documents SET status = 'failed', error_code = ?, upload_claim_until=NULL, updated_at = ?
+        WHERE id = ? AND upload_claim_token=? AND status IN ('processing','pending')`)
+        .bind(errorCode, updatedAt, documentId, token),
     ]);
+    return true;
+  }
+
+  async clearUploadClaim(documentId: string, token: string, updatedAt: string): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE knowledge_documents SET upload_claim_token=NULL, upload_claim_until=NULL, updated_at=?
+      WHERE id=? AND status='pending' AND upload_claim_token=?`).bind(updatedAt, documentId, token).run();
+    return result.meta.changes === 1;
   }
 
   async markDeleting(id: string): Promise<boolean> {

@@ -22,7 +22,10 @@ export async function validateKnowledgeFile(file: File): Promise<ValidatedKnowle
     if (!starts(head, [0x25,0x50,0x44,0x46,0x2d])) throw new KnowledgeFileError("invalid_file");
     const body = new TextDecoder("latin1").decode(await file.arrayBuffer());
     if (/\/Encrypt\b/.test(body)) throw new KnowledgeFileError("encrypted_document");
-    if (!/^%PDF-1\.[0-9][\r\n]/.test(body) || !/\b\d+\s+\d+\s+obj\b[\s\S]*?\bendobj\b/.test(body) || !/(?:\bxref\b|\/Type\s*\/XRef\b)/.test(body) || !/\bstartxref\s+\d+\s+%%EOF\s*$/.test(body)) throw new KnowledgeFileError("invalid_file");
+    const pointer = /\bstartxref\s+(\d+)\s+%%EOF\s*$/.exec(body);
+    if (!/^%PDF-1\.[0-9][\r\n]/.test(body) || !/\b\d+\s+\d+\s+obj\b[\s\S]*?\bendobj\b/.test(body) || !pointer) throw new KnowledgeFileError("invalid_file");
+    const offset = Number(pointer[1]); const target = body.slice(offset);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= body.length || !(target.startsWith("xref") || /^\d+\s+\d+\s+obj\b[\s\S]{0,1024}?\/Type\s*\/XRef\b/.test(target))) throw new KnowledgeFileError("invalid_file");
     return { kind: "pdf", mimeType: file.type, extension: ".pdf" };
   }
   if (file.type === DOCX_MIME) {
@@ -40,7 +43,7 @@ export async function validateKnowledgeFile(file: File): Promise<ValidatedKnowle
   }
   if (file.type === "image/png") {
     if (!starts(head, [137,80,78,71,13,10,26,10])) throw new KnowledgeFileError("invalid_file");
-    validatePng(new Uint8Array(await file.arrayBuffer()));
+    await validatePng(new Uint8Array(await file.arrayBuffer()));
     return { kind: "png", mimeType: file.type, extension: ".png" };
   }
   try { new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(await file.arrayBuffer()); }
@@ -79,20 +82,20 @@ function validateJpeg(bytes: Uint8Array): void {
   throw new KnowledgeFileError("invalid_file");
 }
 
-function validatePng(bytes: Uint8Array): void {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); let offset = 8; let index = 0, idat = 0, ended = false;
+async function validatePng(bytes: Uint8Array): Promise<void> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); let offset = 8; let index = 0, ended = false, width=0,height=0,depth=0,color=0,interlace=0; const idat:Uint8Array[]=[];
   while (offset < bytes.length) {
     if (offset + 12 > bytes.length) throw new KnowledgeFileError("invalid_file");
     const length = view.getUint32(offset); const type = new TextDecoder("ascii").decode(bytes.slice(offset + 4, offset + 8));
     const next = offset + 12 + length; if (!/^[A-Za-z]{4}$/.test(type) || next > bytes.length) throw new KnowledgeFileError("invalid_file");
     if (crc32(bytes.slice(offset + 4, offset + 8 + length)) !== view.getUint32(offset + 8 + length)) throw new KnowledgeFileError("invalid_file");
-    if (index++ === 0 && (type !== "IHDR" || length !== 13 || view.getUint32(offset + 8) === 0 || view.getUint32(offset + 12) === 0 || ![1,2,4,8,16].includes(bytes[offset+16]!) || ![0,2,3,4,6].includes(bytes[offset+17]!))) throw new KnowledgeFileError("invalid_file");
+    if (index++ === 0) { width=view.getUint32(offset+8);height=view.getUint32(offset+12);depth=bytes[offset+16]!;color=bytes[offset+17]!;interlace=bytes[offset+20]!; if(type!=="IHDR"||length!==13||!width||!height||!validPngMode(depth,color)||bytes[offset+18]!==0||bytes[offset+19]!==0||![0,1].includes(interlace))throw new KnowledgeFileError("invalid_file"); }
     if (type === "IHDR" && index !== 1) throw new KnowledgeFileError("invalid_file");
-    if (type === "IDAT") { if (!length) throw new KnowledgeFileError("invalid_file"); idat++; }
-    if (type === "IEND") { if (length !== 0 || next !== bytes.length || idat === 0 || ended) throw new KnowledgeFileError("invalid_file"); ended = true; return; }
+    if (type === "IDAT") { if (!length) throw new KnowledgeFileError("invalid_file"); idat.push(bytes.slice(offset+8,offset+8+length)); }
+    if (type === "IEND") { if (length !== 0 || next !== bytes.length || idat.length === 0 || ended) throw new KnowledgeFileError("invalid_file"); ended = true; break; }
     offset = next;
   }
-  throw new KnowledgeFileError("invalid_file");
+  if(!ended)throw new KnowledgeFileError("invalid_file");const expected=pngExpected(width,height,depth,color,interlace);if(expected>MAX_BYTES)throw new KnowledgeFileError("invalid_file");const raw=await inflate(joinBytes(idat),"deflate",expected);if(raw.length!==expected)throw new KnowledgeFileError("invalid_file");let p=0;for(const row of pngRows(width,height,depth,color,interlace)){const filter=raw[p];if(filter===undefined||filter>4)throw new KnowledgeFileError("invalid_file");p+=row;}
 }
 
 async function validateDocxZip(bytes: Uint8Array): Promise<void> {
@@ -104,13 +107,17 @@ async function validateDocxZip(bytes: Uint8Array): Promise<void> {
   for(let i=0;i<count;i++){
     if(offset+46>eocd||view.getUint32(offset,true)!==0x02014b50)throw new KnowledgeFileError("invalid_file"); const flags=view.getUint16(offset+8,true);if(flags&1)throw new KnowledgeFileError("encrypted_document");
     const method=view.getUint16(offset+10,true), compressed=view.getUint32(offset+20,true), size=view.getUint32(offset+24,true), nl=view.getUint16(offset+28,true),el=view.getUint16(offset+30,true),cl=view.getUint16(offset+32,true),local=view.getUint32(offset+42,true);const name=decode(bytes.slice(offset+46,offset+46+nl));
-    if(local+30>centralOffset||view.getUint32(local,true)!==0x04034b50||view.getUint16(local+6,true)!==flags||view.getUint16(local+8,true)!==method)throw new KnowledgeFileError("invalid_file");const lnl=view.getUint16(local+26,true),lel=view.getUint16(local+28,true);if(decode(bytes.slice(local+30,local+30+lnl))!==name)throw new KnowledgeFileError("invalid_file");const start=local+30+lnl+lel;if(!size||start+compressed>centralOffset)throw new KnowledgeFileError("invalid_file");
-    if(required.has(name)){const raw=bytes.slice(start,start+compressed);const data=method===0?raw:await inflateRaw(raw,method);if(data.length!==size||crc32(data)!==view.getUint32(offset+16,true))throw new KnowledgeFileError("invalid_file");const xml=decode(data).trim();if(!new RegExp(`^<[^>]*${required.get(name)}\\b`).test(xml))throw new KnowledgeFileError("invalid_file");required.delete(name);}
+    if(local+30>centralOffset||view.getUint32(local,true)!==0x04034b50||view.getUint16(local+6,true)!==flags||view.getUint16(local+8,true)!==method)throw new KnowledgeFileError("invalid_file");const lnl=view.getUint16(local+26,true),lel=view.getUint16(local+28,true);if(decode(bytes.slice(local+30,local+30+lnl))!==name)throw new KnowledgeFileError("invalid_file");const start=local+30+lnl+lel;if(!size||size>MAX_BYTES||start+compressed>centralOffset)throw new KnowledgeFileError("invalid_file");
+    if(required.has(name)){const raw=bytes.slice(start,start+compressed);const data=method===0?raw:await inflate(raw,"deflate-raw",size);if(data.length!==size||crc32(data)!==view.getUint32(offset+16,true))throw new KnowledgeFileError("invalid_file");const xml=decode(data).replace(/^\uFEFF?\s*(?:<\?[\s\S]*?\?>\s*)?(?:(?:<!--[\s\S]*?-->)\s*)*/,"");if(!new RegExp(`^<[^>]*${required.get(name)}\\b`).test(xml))throw new KnowledgeFileError("invalid_file");required.delete(name);}
     offset+=46+nl+el+cl;
   }
   if(offset!==eocd||required.size)throw new KnowledgeFileError("invalid_file");
 }
-async function inflateRaw(data:Uint8Array,method:number){if(method!==8)throw new KnowledgeFileError("invalid_file");try{const stream=new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw" as never));return new Uint8Array(await new Response(stream).arrayBuffer());}catch{throw new KnowledgeFileError("invalid_file");}}
+async function inflate(data:Uint8Array,format:"deflate"|"deflate-raw",limit:number){try{const reader=new Blob([data]).stream().pipeThrough(new DecompressionStream(format as never)).getReader();const chunks:Uint8Array[]=[];let size=0;while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>Math.min(limit,MAX_BYTES)){await reader.cancel();throw new KnowledgeFileError("invalid_file");}chunks.push(value);}return joinBytes(chunks);}catch(error){if(error instanceof KnowledgeFileError)throw error;throw new KnowledgeFileError("invalid_file");}}
 function decode(data:Uint8Array){try{return new TextDecoder("utf-8",{fatal:true,ignoreBOM:false}).decode(data);}catch{throw new KnowledgeFileError("invalid_file");}}
 function crc32(data:Uint8Array){let c=0xffffffff;for(const b of data){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0);}return(c^0xffffffff)>>>0;}
+function joinBytes(values:Uint8Array[]){const out=new Uint8Array(values.reduce((s,v)=>s+v.length,0));let o=0;for(const v of values){out.set(v,o);o+=v.length;}return out;}
+function validPngMode(d:number,c:number){return(c===0&&[1,2,4,8,16].includes(d))||(c===2&&[8,16].includes(d))||(c===3&&[1,2,4,8].includes(d))||(c===4&&[8,16].includes(d))||(c===6&&[8,16].includes(d));}
+function pngRows(w:number,h:number,d:number,c:number,i:number){const channels=({0:1,2:3,3:1,4:2,6:4} as Record<number,number>)[c]!;const row=(x:number)=>1+Math.ceil(x*channels*d/8);if(!i)return Array(h).fill(row(w));const passes=[[0,0,8,8],[4,0,8,8],[0,4,4,8],[2,0,4,4],[0,2,2,4],[1,0,2,2],[0,1,1,2]];const rows:number[]=[];for(const [sx,sy,dx,dy] of passes){const pw=w>sx! ? Math.ceil((w-sx!)/dx!) : 0, ph=h>sy! ? Math.ceil((h-sy!)/dy!) : 0;for(let y=0;y<ph;y++)rows.push(row(pw));}return rows;}
+function pngExpected(w:number,h:number,d:number,c:number,i:number){return pngRows(w,h,d,c,i).reduce((a,b)=>a+b,0);}
 function validateEncryptedCfb(bytes:Uint8Array){if(bytes.length<1024)throw new KnowledgeFileError("invalid_file");const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);if(v.getUint16(26,true)!==3||v.getUint16(28,true)!==0xfffe||v.getUint16(30,true)!==9||v.getUint16(32,true)!==6)throw new KnowledgeFileError("invalid_file");const sector=v.getUint32(48,true),start=512+sector*512;if(start<512||start+512>bytes.length)throw new KnowledgeFileError("invalid_file");const names=new Set<string>();for(let o=start;o+128<=start+512;o+=128){const len=v.getUint16(o+64,true);if(len>=2&&len<=64&&len%2===0)names.add(new TextDecoder("utf-16le").decode(bytes.slice(o,o+len-2)));}if(!names.has("EncryptionInfo")||!names.has("EncryptedPackage"))throw new KnowledgeFileError("invalid_file");}

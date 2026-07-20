@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { validateKnowledgeFile } from "../../src/knowledge/file-validation";
 
-const validDocx = zipEntries([["[Content_Types].xml", "\uFEFF<?xml version=\"1.0\"?>\n<!-- office -->\n<Types></Types>"], ["word/document.xml", "<?xml version=\"1.0\"?>\n<w:document></w:document>"]]);
+const validDocx = zipEntries([["word/", ""], ["_rels/", ""], ["[Content_Types].xml", "\uFEFF<?xml version=\"1.0\"?>\n<!-- office -->\n<Types></Types>"], ["word/document.xml", "<?xml version=\"1.0\"?>\n<w:document></w:document>"]]);
 
 describe("validateKnowledgeFile", () => {
   test.each([
@@ -48,6 +48,11 @@ describe("validateKnowledgeFile", () => {
 test("rejects DOCX declared uncompressed content above the bounded limit", async () => {
   const value=zipEntries([["[Content_Types].xml","<Types/>"] ,["word/document.xml","<w:document/>"]]);const view=new DataView(value.buffer);let central=0;for(let i=0;i<value.length-4;i++)if(view.getUint32(i,true)===0x02014b50){central=i;break;}view.setUint32(central+24,10*1024*1024+1,true);
   await expect(validateKnowledgeFile(new File([value],"bomb.docx",{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}))).rejects.toMatchObject({code:"invalid_file"});
+});
+
+test.each([["<NotTypes/>","<w:document/>"],["<Types/>","<w:notdocument/>"]])("rejects inexact DOCX XML root local names", async (types,document) => {
+  const value=zipEntries([["[Content_Types].xml",types],["word/document.xml",document]]);
+  await expect(validateKnowledgeFile(new File([value],"roots.docx",{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}))).rejects.toMatchObject({code:"invalid_file"});
 });
 
 test.each([[new Uint8Array([1,2,3]),8,2],[null,1,2],[null,8,2]])("rejects invalid PNG zlib, illegal depth/color, or scanline filter", async (compressed,depth,color) => {

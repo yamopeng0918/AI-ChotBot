@@ -132,6 +132,20 @@ test("concurrent same-key uploads with different content/extensions have one R2 
   } finally { await mf.dispose(); }
 });
 
+test("route fences a slow stale R2 worker after a different-extension reclaim", async () => {
+  const mf=new Miniflare({modules:true,script:"export default { fetch(){return new Response('ok')} }",d1Databases:["DB"]});
+  try{
+    const db=await mf.getD1Database("DB");await applyMigrations(db);let current=new Date("2026-07-20T00:00:00.000Z");const tokens=["old-secret-token","new-secret-token"];
+    const repository=new KnowledgeRepository(db,()=>tokens.shift()!);const objects=new Map<string,string>();const deletes:string[]=[];let release!:()=>void;const gate=new Promise<void>((resolve)=>{release=resolve;});let oldStarted!:()=>void;const started=new Promise<void>((resolve)=>{oldStarted=resolve;});
+    const store={putOriginal:vi.fn(async(key:string,body:Blob)=>{const text=await body.text();if(text==="OLD"){oldStarted();await gate;}objects.set(key,text);}),getOriginal:vi.fn(),deleteOriginal:vi.fn(async(key:string)=>{deletes.push(key);objects.delete(key);})};const queue={send:vi.fn(async()=>({outcome:"ok"}))};
+    const worker=createWorker({knowledge:repository,objectStore:store as never,ingestionQueue:queue as never,now:()=>current,validateFile:async(file)=>file.name.endsWith(".png")?{kind:"png",mimeType:"image/png",extension:".png"}:{kind:"pdf",mimeType:"application/pdf",extension:".pdf"}});
+    const request=(name:string,body:string)=>{const form=new FormData();form.append("file",new File([body],name,{type:name.endsWith(".png")?"image/png":"application/pdf"}));return worker.fetch(new Request("https://worker.test/admin/knowledge/files",{method:"POST",headers:{authorization:"Bearer admin","Idempotency-Key":"slow-race"},body:form}),{DB:db,ADMIN_API_TOKEN:"admin"} as Env,{} as ExecutionContext);};
+    const oldResponse=request("old.pdf","OLD");await started;current=new Date("2026-07-20T00:05:00.000Z");const newResponse=await request("new.png","NEW");release();const oldDone=await oldResponse;
+    expect([newResponse.status,oldDone.status]).toEqual([202,202]);expect(queue.send).toHaveBeenCalledTimes(1);const id=((await newResponse.json()) as {documentId:string}).documentId;const doc=await repository.getDocument(id);
+    expect(doc).toEqual(expect.objectContaining({displayName:"new.png",contentHash:await sha256("NEW"),status:"pending"}));expect(objects).toEqual(new Map([[doc!.r2Key!,"NEW"]]));expect(deletes).toContainEqual(expect.stringMatching(/\.pdf$/));expect(deletes).not.toContain(doc!.r2Key!);
+  }finally{await mf.dispose();}
+});
+
 function validForm() { const form = new FormData(); form.append("file", new File(["%PDF-1.7"], "ori\u0000ginal.pdf", { type: "application/pdf" })); return form; }
 async function sha256(value: string) { return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)))].map((b) => b.toString(16).padStart(2,"0")).join(""); }
 async function applyMigrations(db:D1Database){for(const sql of [knowledgeMigration,uploadClaimMigration])await db.batch(sql.split(";").map((s)=>s.trim()).filter(Boolean).map((s)=>db.prepare(s)));}

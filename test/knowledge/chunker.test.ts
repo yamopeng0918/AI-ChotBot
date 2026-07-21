@@ -72,6 +72,17 @@ describe("chunkDocument", () => {
     expect(chunks.filter((chunk) => chunk.pageNumber === 3).every((chunk) => chunk.sectionPath === "Beta")).toBe(true);
   });
 
+  test("resets section continuity across nonadjacent numeric pages", () => {
+    const diagnostics = { ocrStatus: "unknown" as const, nonWhitespaceCharacters: 1, replacementRatio: 0, controlRatio: 0, hasReadableContent: true };
+    const doc: ConvertedDocument = { ...converted("unused", 1), pages: [
+      { pageNumber: 1, markdown: "# Alpha\n\npage one", ocrApplied: null, diagnostics },
+      { pageNumber: 3, markdown: "page three", ocrApplied: null, diagnostics },
+    ] };
+    const chunks = chunkDocument(doc);
+    expect(chunks.filter((chunk) => chunk.pageNumber === 1).every((chunk) => chunk.sectionPath === "Alpha")).toBe(true);
+    expect(chunks.filter((chunk) => chunk.pageNumber === 3).every((chunk) => chunk.sectionPath === null)).toBe(true);
+  });
+
   test("targets 500-800 tokens when feasible and preserves infeasible 450-token paragraphs", () => {
     const feasible = chunkDocument(converted(["a".repeat(1200), "b".repeat(1200), "c".repeat(1200), "d".repeat(1200)].join("\n\n")));
     expect(feasible.every((chunk) => estimateTokens(chunk.text) >= 500 && estimateTokens(chunk.text) <= 800)).toBe(true);

@@ -101,7 +101,7 @@ function validPdfPreamble(value: string): boolean {
 function qualityDiagnostics(value: string): PageDiagnostics {
   const chars = [...value], nonWhitespace = chars.filter((char) => !/\s/u.test(char));
   const replacements = nonWhitespace.filter((char) => char === "\uFFFD").length;
-  const controls = nonWhitespace.filter((char) => { const point = char.codePointAt(0)!; return (point <= 0x1f && char !== "\n" && char !== "\r" && char !== "\t") || (point >= 0x7f && point <= 0x9f); }).length;
+  const controls = chars.filter((char) => { const point = char.codePointAt(0)!; return (point <= 0x1f && char !== "\n" && char !== "\r" && char !== "\t") || (point >= 0x7f && point <= 0x9f); }).length;
   const diagnostics = { nonWhitespaceCharacters: nonWhitespace.length, replacementRatio: nonWhitespace.length ? replacements / nonWhitespace.length : 0, controlRatio: nonWhitespace.length ? controls / nonWhitespace.length : 0, hasReadableContent: /[\p{L}\p{N}\u3400-\u9fff]/u.test(value) };
   if (!value.trim() || !nonWhitespace.length || diagnostics.replacementRatio > 0.02 || diagnostics.controlRatio > 0.01 || !diagnostics.hasReadableContent) throw new ConversionError("low_quality_output", false);
   return diagnostics;

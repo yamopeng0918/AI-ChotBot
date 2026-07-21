@@ -14,8 +14,12 @@ export function estimateTokens(text: string): number {
 }
 
 export function chunkDocument(document: ConvertedDocument): KnowledgeChunkDraft[] {
-  const drafts: KnowledgeChunkDraft[] = []; let currentSection: string | null = null;
+  const drafts: KnowledgeChunkDraft[] = []; let currentSection: string | null = null, previousPageNumber: number | null = null;
   for (const page of document.pages) {
+    if (page.pageNumber !== null) {
+      if (previousPageNumber !== null && page.pageNumber !== previousPageNumber + 1) currentSection = null;
+      previousPageNumber = page.pageNumber;
+    }
     const parsed = paragraphUnits(page.markdown, currentSection); currentSection = parsed.finalSection;
     const units = parsed.units.flatMap(splitOversizedUnit);
     let current: Unit[] = [];

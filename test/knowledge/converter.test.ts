@@ -54,6 +54,15 @@ describe("DocumentConverter", () => {
     expect(page.diagnostics).toEqual({ nonWhitespaceCharacters: 100, replacementRatio: 0.02, controlRatio: 0.01, hasReadableContent: true });
   });
 
+  test.each([["\u000B", 100], ["\u000C", 100], ["\u0085", 99]])("counts whitespace-like control %s at the exact 1%% boundary", async (control, readableCount) => {
+    const page = (await new DocumentConverter({ toMarkdown: vi.fn().mockResolvedValue(success(`${"a".repeat(readableCount)}${control}`)) }).convert(source("text"))).pages[0]!;
+    expect(page.diagnostics).toEqual({ nonWhitespaceCharacters: 100, replacementRatio: 0, controlRatio: 0.01, hasReadableContent: true });
+  });
+
+  test.each([["\u000B", 99], ["\u000C", 99], ["\u0085", 98]])("rejects whitespace-like control %s above 1%%", async (control, readableCount) => {
+    await expect(new DocumentConverter({ toMarkdown: vi.fn().mockResolvedValue(success(`${"a".repeat(readableCount)}${control}${control}`)) }).convert(source("text"))).rejects.toMatchObject({ code: "low_quality_output", retryable: false });
+  });
+
   test.each([
     ["### Page 2\ntext", "invalid_page_markers"],
     ["### Page 1\none\n### Page 1\ntwo", "invalid_page_markers"],

@@ -112,7 +112,6 @@ describe("knowledge admin metadata API", () => {
   });
 
   test.each([
-    ["POST", "/admin/knowledge/urls"],
     ["POST", "/admin/knowledge/documents/doc/reindex"],
     ["DELETE", "/admin/knowledge/documents/doc"],
   ])("does not register %s %s early", async (method, path) => {
@@ -121,7 +120,6 @@ describe("knowledge admin metadata API", () => {
   });
 
   test.each([
-    ["POST", "/admin/knowledge/urls"],
     ["POST", "/admin/knowledge/documents/doc/reindex"],
     ["DELETE", "/admin/knowledge/documents/doc"],
   ])("leaves unregistered %s %s as 404 without authorization", async (method, path) => {

@@ -2,6 +2,8 @@ import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import questionsMigration from "../../migrations/0001_questions.sql?raw";
 import knowledgeMigration from "../../migrations/0002_knowledge.sql?raw";
+import claimMigration from "../../migrations/0003_upload_claim_fencing.sql?raw";
+import urlSnapshotMigration from "../../migrations/0004_url_snapshots.sql?raw";
 
 describe("knowledge migration", () => {
   let miniflare: Miniflare;
@@ -16,6 +18,8 @@ describe("knowledge migration", () => {
     db = await miniflare.getD1Database("DB");
     await applyMigration(questionsMigration);
     await applyMigration(knowledgeMigration);
+    await applyMigration(claimMigration);
+    await applyMigration(urlSnapshotMigration);
   });
 
   afterEach(async () => {
@@ -76,6 +80,22 @@ describe("knowledge migration", () => {
       "ingestion_jobs_status_lease_until_idx",
       "ingestion_jobs_document_id_idx",
     ]));
+  });
+
+  test("preserves schema and permits URL source with a private snapshot", async () => {
+    await db.prepare(`INSERT INTO knowledge_documents
+      (id, source_type, display_name, source_url, r2_key, status, created_at, updated_at, upload_claim_token)
+      VALUES ('url-doc', 'url', 'Article', 'https://example.com/', 'url-doc.md', 'processing', 'now', 'now', 'token')`).run();
+    await db.prepare(`INSERT INTO knowledge_chunks
+      (id, document_id, index_version, text, vector_id, content_hash, created_at)
+      VALUES ('chunk', 'url-doc', 1, 'text', 'vector', 'hash', 'now')`).run();
+    await db.prepare(`INSERT INTO ingestion_jobs
+      (id, document_id, operation, status, created_at, updated_at)
+      VALUES ('job', 'url-doc', 'ingest', 'pending', 'now', 'now')`).run();
+    expect(await db.prepare("SELECT upload_claim_token FROM knowledge_documents WHERE id='url-doc'").first()).toEqual({ upload_claim_token: "token" });
+    await expect(db.prepare("DELETE FROM knowledge_documents WHERE id='url-doc'").run()).resolves.toBeTruthy();
+    expect((await db.prepare("SELECT count(*) count FROM knowledge_chunks WHERE document_id='url-doc'").first<{count:number}>())!.count).toBe(0);
+    expect((await db.prepare("SELECT count(*) count FROM ingestion_jobs WHERE document_id='url-doc'").first<{count:number}>())!.count).toBe(0);
   });
 
   async function insertDocument(): Promise<void> {

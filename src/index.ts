@@ -14,6 +14,7 @@ import { registerKnowledgeAdminRoutes, type KnowledgeAdminRepository } from "./k
 import { KnowledgeRepository } from "./knowledge/repository";
 import { R2KnowledgeObjectStore, type KnowledgeObjectStore } from "./knowledge/storage";
 import type { ValidatedKnowledgeFile } from "./knowledge/file-validation";
+import { TavilySafeUrlFetcher, type SafeUrlFetcher } from "./knowledge/url-safety";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
@@ -28,6 +29,7 @@ type WorkerDependencies = {
   objectStore?: KnowledgeObjectStore | ((env: Env) => KnowledgeObjectStore);
   ingestionQueue?: Pick<Queue<import("./knowledge/types").IngestionJobMessage>, "send">;
   validateFile?: (file: File) => Promise<ValidatedKnowledgeFile>;
+  safeUrlFetcher?: SafeUrlFetcher | ((env: Env) => SafeUrlFetcher);
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -42,7 +44,8 @@ export function createWorker(overrides: WorkerDependencies = {}) {
   };
   const objectStoreFor = (env: Env): KnowledgeObjectStore => typeof overrides.objectStore === "function" ? overrides.objectStore(env) : overrides.objectStore ?? new R2KnowledgeObjectStore(env.FILES);
 
-registerKnowledgeAdminRoutes(app, { repositoryFor: knowledgeFor, objectStoreFor, queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE, validateFile: overrides.validateFile, now: overrides.now });
+const safeUrlFetcherFor = (env: Env): SafeUrlFetcher => typeof overrides.safeUrlFetcher === "function" ? overrides.safeUrlFetcher(env) : overrides.safeUrlFetcher ?? new TavilySafeUrlFetcher(overrides.fetcher ?? fetch, env.TAVILY_API_KEY, overrides.now);
+registerKnowledgeAdminRoutes(app, { repositoryFor: knowledgeFor, objectStoreFor, queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE, validateFile: overrides.validateFile, safeUrlFetcherFor, now: overrides.now });
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 

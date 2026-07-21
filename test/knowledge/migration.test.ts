@@ -4,6 +4,7 @@ import questionsMigration from "../../migrations/0001_questions.sql?raw";
 import knowledgeMigration from "../../migrations/0002_knowledge.sql?raw";
 import claimMigration from "../../migrations/0003_upload_claim_fencing.sql?raw";
 import urlSnapshotMigration from "../../migrations/0004_url_snapshots.sql?raw";
+import lifecycleMigration from "../../migrations/0005_ingestion_lifecycle.sql?raw";
 
 describe("knowledge migration", () => {
   let miniflare: Miniflare;
@@ -19,9 +20,9 @@ describe("knowledge migration", () => {
     await applyMigration(questionsMigration);
     await applyMigration(knowledgeMigration);
     await applyMigration(claimMigration);
-    await db.prepare(`INSERT INTO knowledge_documents (id,source_type,display_name,source_url,r2_key,content_hash,status,created_at,updated_at,upload_claim_token,upload_claim_until) VALUES
-      ('legacy-file','file','File',NULL,'file.pdf','fh','ready','c1','u1',NULL,NULL),
-      ('legacy-url','url','URL','https://example.com/',NULL,'uh','ready','c2','u2',NULL,NULL)`).run();
+    await db.prepare(`INSERT INTO knowledge_documents (id,source_type,display_name,source_url,r2_key,active_version,content_hash,status,created_at,updated_at,upload_claim_token,upload_claim_until) VALUES
+      ('legacy-file','file','File',NULL,'file.pdf',3,'fh','ready','c1','u1',NULL,NULL),
+      ('legacy-url','url','URL','https://example.com/',NULL,NULL,'uh','ready','c2','u2',NULL,NULL)`).run();
     await db.prepare(`INSERT INTO knowledge_chunks (id,document_id,index_version,text,page_number,section_path,paragraph_index,vector_id,content_hash,created_at) VALUES
       ('file-chunk','legacy-file',1,'file text',1,'s',0,'fv','fch','c1'),
       ('url-chunk','legacy-url',2,'url text',NULL,NULL,NULL,'uv','uch','c2')`).run();
@@ -29,6 +30,7 @@ describe("knowledge migration", () => {
       ('file-job','legacy-file','ingest','completed',2,NULL,'c1','u1'),
       ('url-job','legacy-url','reindex','failed',3,'old_error','c2','u2')`).run();
     await applyMigration(urlSnapshotMigration);
+    await applyMigration(lifecycleMigration);
   });
 
   afterEach(async () => {
@@ -105,6 +107,15 @@ describe("knowledge migration", () => {
     await expect(db.prepare("DELETE FROM knowledge_documents WHERE id='legacy-url'").run()).resolves.toBeTruthy();
     expect((await db.prepare("SELECT count(*) count FROM knowledge_chunks WHERE document_id='legacy-url'").first<{count:number}>())!.count).toBe(0);
     expect((await db.prepare("SELECT count(*) count FROM ingestion_jobs WHERE document_id='legacy-url'").first<{count:number}>())!.count).toBe(0);
+  });
+
+  test("upgrades 0001 through 0005 without losing data and initializes lifecycle columns", async () => {
+    expect(await db.prepare("SELECT id,next_version FROM knowledge_documents ORDER BY id").all()).toEqual(expect.objectContaining({
+      results: [{ id: "legacy-file", next_version: 4 }, { id: "legacy-url", next_version: 1 }],
+    }));
+    expect(await db.prepare("SELECT id,index_version,failure_kind FROM ingestion_jobs ORDER BY id").all()).toEqual(expect.objectContaining({
+      results: [{ id: "file-job", index_version: null, failure_kind: null }, { id: "url-job", index_version: null, failure_kind: null }],
+    }));
   });
 
   async function insertDocument(): Promise<void> {

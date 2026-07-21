@@ -24,6 +24,16 @@ export type CreateJobInput = {
   createdAt: string;
 };
 
+export type ClaimJobResult =
+  | { disposition: "acquired"; leaseToken: string; leaseUntil: string; attemptCount: number }
+  | { disposition: "busy"; delaySeconds: number }
+  | { disposition: "completed"; ack: true }
+  | { disposition: "failed"; ack: true; failureKind: "retryable" | "permanent"; errorCode: string };
+
+export class StaleIngestionClaimError extends Error {
+  constructor() { super("The ingestion claim is stale or expired"); this.name = "StaleIngestionClaimError"; }
+}
+
 const documentColumns = `id, source_type, display_name, source_url, r2_key, active_version,
   content_hash, page_count, error_code, status, created_at, updated_at`;
 
@@ -65,6 +75,91 @@ export class KnowledgeRepository {
       attemptCount: 0, leaseToken: null, leaseUntil: null, errorCode: null,
       createdAt: input.createdAt, updatedAt: input.createdAt,
     };
+  }
+
+  async claimJob(jobId: string, leaseSeconds: number, now = new Date().toISOString()): Promise<ClaimJobResult> {
+    const current = await this.db.prepare(`SELECT status,attempt_count,lease_until,error_code,failure_kind
+      FROM ingestion_jobs WHERE id=?`).bind(jobId).first<{
+      status: IngestionJob["status"]; attempt_count: number; lease_until: string | null;
+      error_code: string | null; failure_kind: "retryable" | "permanent" | null;
+    }>();
+    if (!current) return { disposition: "failed", ack: true, failureKind: "permanent", errorCode: "not_found" };
+    if (current.status === "completed") return { disposition: "completed", ack: true };
+    if (current.status === "failed") return { disposition: "failed", ack: true, failureKind: current.failure_kind ?? "permanent", errorCode: current.error_code ?? "unknown" };
+    if (current.status === "processing" && current.lease_until! > now) {
+      return { disposition: "busy", delaySeconds: Math.max(1, Math.ceil((Date.parse(current.lease_until!) - Date.parse(now)) / 1000)) };
+    }
+
+    if (current.attempt_count >= 4) {
+      const exhausted = await this.db.prepare(`UPDATE ingestion_jobs SET status='failed',error_code='retry_exhausted',
+        failure_kind='permanent',lease_token=NULL,lease_until=NULL,updated_at=?
+        WHERE id=? AND attempt_count>=4 AND (status='pending' OR (status='processing' AND lease_until<=?))`)
+        .bind(now, jobId, now).run();
+      if (exhausted.meta.changes === 1) return { disposition: "failed", ack: true, failureKind: "permanent", errorCode: "retry_exhausted" };
+      return this.claimJob(jobId, leaseSeconds, now);
+    }
+
+    const token = this.claimToken();
+    const leaseUntil = new Date(Date.parse(now) + leaseSeconds * 1000).toISOString();
+    const claimed = await this.db.prepare(`UPDATE ingestion_jobs SET status='processing',attempt_count=attempt_count+1,
+      lease_token=?,lease_until=?,error_code=NULL,failure_kind=NULL,updated_at=?
+      WHERE id=? AND attempt_count<4 AND (status='pending' OR (status='processing' AND lease_until<=?))`)
+      .bind(token, leaseUntil, now, jobId, now).run();
+    if (claimed.meta.changes !== 1) return this.claimJob(jobId, leaseSeconds, now);
+    const row = await this.db.prepare("SELECT attempt_count FROM ingestion_jobs WHERE id=? AND lease_token=?")
+      .bind(jobId, token).first<{ attempt_count: number }>();
+    return { disposition: "acquired", leaseToken: token, leaseUntil, attemptCount: row!.attempt_count };
+  }
+
+  async renewJob(jobId: string, token: string, now: string): Promise<string> {
+    const leaseUntil = new Date(Date.parse(now) + 300_000).toISOString();
+    const result = await this.db.prepare(`UPDATE ingestion_jobs SET lease_until=?,updated_at=?
+      WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
+      .bind(leaseUntil, now, jobId, token, now).run();
+    this.assertLiveMutation(result.meta.changes);
+    return leaseUntil;
+  }
+
+  async failJob(jobId: string, errorCode: string, failureKind: "retryable" | "permanent", token: string, now: string): Promise<void> {
+    const result = await this.db.prepare(`UPDATE ingestion_jobs SET status='failed',error_code=?,failure_kind=?,
+      lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
+      .bind(errorCode, failureKind, now, jobId, token, now).run();
+    this.assertLiveMutation(result.meta.changes);
+  }
+
+  async beginVersion(jobId: string, token: string, now: string): Promise<number> {
+    const results = await this.db.batch([
+      this.db.prepare(`UPDATE ingestion_jobs SET index_version=COALESCE(index_version,
+        (SELECT next_version FROM knowledge_documents WHERE id=ingestion_jobs.document_id)),updated_at=?
+        WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`).bind(now, jobId, token, now),
+      this.db.prepare(`UPDATE knowledge_documents SET next_version=next_version+1
+        WHERE id=(SELECT document_id FROM ingestion_jobs WHERE id=?)
+        AND next_version=(SELECT index_version FROM ingestion_jobs WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?)`)
+        .bind(jobId, jobId, token, now),
+    ]);
+    this.assertLiveMutation(results[0]!.meta.changes);
+    const row = await this.db.prepare("SELECT index_version FROM ingestion_jobs WHERE id=? AND lease_token=?")
+      .bind(jobId, token).first<{ index_version: number }>();
+    return row!.index_version;
+  }
+
+  async publishVersion(jobId: string, token: string, now: string): Promise<void> {
+    const result = await this.db.prepare(`UPDATE knowledge_documents SET active_version=(SELECT index_version FROM ingestion_jobs WHERE id=?),
+      status='ready',error_code=NULL,updated_at=? WHERE id=(SELECT document_id FROM ingestion_jobs WHERE id=?)
+      AND EXISTS (SELECT 1 FROM ingestion_jobs WHERE id=? AND status='processing' AND lease_token=? AND lease_until>? AND index_version IS NOT NULL)`)
+      .bind(jobId, now, jobId, jobId, token, now).run();
+    this.assertLiveMutation(result.meta.changes);
+  }
+
+  async completeJob(jobId: string, token: string, now: string): Promise<void> {
+    const result = await this.db.prepare(`UPDATE ingestion_jobs SET status='completed',lease_token=NULL,lease_until=NULL,
+      error_code=NULL,failure_kind=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
+      .bind(now, jobId, token, now).run();
+    this.assertLiveMutation(result.meta.changes);
+  }
+
+  private assertLiveMutation(changes: number): void {
+    if (changes !== 1) throw new StaleIngestionClaimError();
   }
 
   async claimUpload(document: CreatePendingDocumentInput, jobId: string, now: string, extension: string): Promise<{ disposition: "winner"; token: string; r2Key: string; previousR2Key: string | null } | { disposition: "busy" | "resume_queue" | "duplicate" }> {

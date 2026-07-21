@@ -89,6 +89,52 @@ describe("fenced ingestion repository", () => {
     expect(await repository.claimJob("missing", 300, t0)).toEqual({ disposition: "failed", ack: true, failureKind: "permanent", errorCode: "not_found" });
   });
 
+  test("publishing cannot roll an active version back and equal-version retry succeeds", async () => {
+    await repository.createJob({ id: "job-2", documentId: "doc", operation: "reindex", createdAt: t0 });
+    await repository.claimJob("job", 300, t0); await repository.claimJob("job-2", 300, t0);
+    expect(await repository.beginVersion("job", "token-1", t0)).toBe(1);
+    expect(await repository.beginVersion("job-2", "token-2", t0)).toBe(2);
+    await repository.publishVersion("job-2", "token-2", "2026-07-21T00:01:00.000Z");
+    await repository.publishVersion("job-2", "token-2", "2026-07-21T00:01:01.000Z");
+    await expect(repository.publishVersion("job", "token-1", "2026-07-21T00:01:02.000Z")).rejects.toBeInstanceOf(StaleIngestionClaimError);
+    expect(await db.prepare("SELECT active_version FROM knowledge_documents WHERE id='doc'").first()).toEqual({ active_version: 2 });
+  });
+
+  test.each([0, -300, 299, 301, NaN, Infinity])("rejects invalid lease seconds %s before token or D1 access", async (leaseSeconds) => {
+    let tokenCalls = 0; let dbCalls = 0;
+    const guarded = new KnowledgeRepository(new Proxy({} as D1Database, { get() { dbCalls++; throw new Error("db accessed"); } }), () => { tokenCalls++; return "token"; });
+    await expect(guarded.claimJob("job", leaseSeconds, t0)).rejects.toBeInstanceOf(RangeError);
+    expect({ tokenCalls, dbCalls }).toEqual({ tokenCalls: 0, dbCalls: 0 });
+  });
+
+  test("rejects invalid mutation times before touching D1", async () => {
+    let dbCalls = 0;
+    const guarded = new KnowledgeRepository(new Proxy({} as D1Database, { get() { dbCalls++; throw new Error("db accessed"); } }));
+    await expect(guarded.claimJob("job", 300, "invalid")).rejects.toBeInstanceOf(RangeError);
+    await expect(guarded.renewJob("job", "token", "invalid")).rejects.toBeInstanceOf(RangeError);
+    await expect(guarded.failJob("job", "bad", "permanent", "token", "invalid")).rejects.toBeInstanceOf(RangeError);
+    await expect(guarded.beginVersion("job", "token", "invalid")).rejects.toBeInstanceOf(RangeError);
+    await expect(guarded.publishVersion("job", "token", "invalid")).rejects.toBeInstanceOf(RangeError);
+    await expect(guarded.completeJob("job", "token", "invalid")).rejects.toBeInstanceOf(RangeError);
+    expect(dbCalls).toBe(0);
+  });
+
+  test("canonicalizes offset times before lease comparison and renewal", async () => {
+    expect(await repository.claimJob("job", 300, "2026-07-21T08:00:00+08:00")).toEqual(expect.objectContaining({ leaseUntil: "2026-07-21T00:05:00.000Z" }));
+    expect(await repository.renewJob("job", "token-1", "2026-07-21T08:01:00+08:00")).toBe("2026-07-21T00:06:00.000Z");
+  });
+
+  test("bounds claim retries and token generation during repeated CAS loss", async () => {
+    let reads = 0; let writes = 0; let tokenCalls = 0;
+    const fake = { prepare(sql: string) { return { bind() { return {
+      async first() { reads++; return { status: "pending", attempt_count: 0, lease_until: null, error_code: null, failure_kind: null }; },
+      async run() { writes++; return { meta: { changes: 0 } }; },
+    }; } }; } } as unknown as D1Database;
+    const guarded = new KnowledgeRepository(fake, () => { tokenCalls++; return `token-${tokenCalls}`; });
+    expect(await guarded.claimJob("job", 300, t0)).toEqual({ disposition: "busy", delaySeconds: 1 });
+    expect(reads).toBeLessThanOrEqual(5); expect(writes).toBeLessThanOrEqual(4); expect(tokenCalls).toBeLessThanOrEqual(4);
+  });
+
   async function row(id: string): Promise<Record<string, unknown>> { return (await db.prepare("SELECT * FROM ingestion_jobs WHERE id=?").bind(id).first())!; }
 });
 

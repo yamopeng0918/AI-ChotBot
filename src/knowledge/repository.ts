@@ -30,6 +30,14 @@ export type ClaimJobResult =
   | { disposition: "completed"; ack: true }
   | { disposition: "failed"; ack: true; failureKind: "retryable" | "permanent"; errorCode: string };
 
+type ClaimState = {
+  status: IngestionJob["status"];
+  attempt_count: number;
+  lease_until: string | null;
+  error_code: string | null;
+  failure_kind: "retryable" | "permanent" | null;
+};
+
 export class StaleIngestionClaimError extends Error {
   constructor() { super("The ingestion claim is stale or expired"); this.name = "StaleIngestionClaimError"; }
 }
@@ -78,40 +86,36 @@ export class KnowledgeRepository {
   }
 
   async claimJob(jobId: string, leaseSeconds: number, now = new Date().toISOString()): Promise<ClaimJobResult> {
-    const current = await this.db.prepare(`SELECT status,attempt_count,lease_until,error_code,failure_kind
-      FROM ingestion_jobs WHERE id=?`).bind(jobId).first<{
-      status: IngestionJob["status"]; attempt_count: number; lease_until: string | null;
-      error_code: string | null; failure_kind: "retryable" | "permanent" | null;
-    }>();
-    if (!current) return { disposition: "failed", ack: true, failureKind: "permanent", errorCode: "not_found" };
-    if (current.status === "completed") return { disposition: "completed", ack: true };
-    if (current.status === "failed") return { disposition: "failed", ack: true, failureKind: current.failure_kind ?? "permanent", errorCode: current.error_code ?? "unknown" };
-    if (current.status === "processing" && current.lease_until! > now) {
-      return { disposition: "busy", delaySeconds: Math.max(1, Math.ceil((Date.parse(current.lease_until!) - Date.parse(now)) / 1000)) };
+    if (!Number.isInteger(leaseSeconds) || leaseSeconds !== 300) throw new RangeError("leaseSeconds must be exactly 300");
+    now = normalizeNow(now);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const current = await this.readClaimState(jobId);
+      const settled = claimDisposition(current, now);
+      if (settled) return settled;
+      if (current!.attempt_count >= 4) {
+        const exhausted = await this.db.prepare(`UPDATE ingestion_jobs SET status='failed',error_code='retry_exhausted',
+          failure_kind='permanent',lease_token=NULL,lease_until=NULL,updated_at=?
+          WHERE id=? AND attempt_count>=4 AND (status='pending' OR (status='processing' AND lease_until<=?))`)
+          .bind(now, jobId, now).run();
+        if (exhausted.meta.changes === 1) return { disposition: "failed", ack: true, failureKind: "permanent", errorCode: "retry_exhausted" };
+        continue;
+      }
+      const token = this.claimToken();
+      const leaseUntil = new Date(Date.parse(now) + 300_000).toISOString();
+      const claimed = await this.db.prepare(`UPDATE ingestion_jobs SET status='processing',attempt_count=attempt_count+1,
+        lease_token=?,lease_until=?,error_code=NULL,failure_kind=NULL,updated_at=?
+        WHERE id=? AND attempt_count<4 AND (status='pending' OR (status='processing' AND lease_until<=?))`)
+        .bind(token, leaseUntil, now, jobId, now).run();
+      if (claimed.meta.changes !== 1) continue;
+      const row = await this.db.prepare("SELECT attempt_count FROM ingestion_jobs WHERE id=? AND lease_token=?")
+        .bind(jobId, token).first<{ attempt_count: number }>();
+      return { disposition: "acquired", leaseToken: token, leaseUntil, attemptCount: row!.attempt_count };
     }
-
-    if (current.attempt_count >= 4) {
-      const exhausted = await this.db.prepare(`UPDATE ingestion_jobs SET status='failed',error_code='retry_exhausted',
-        failure_kind='permanent',lease_token=NULL,lease_until=NULL,updated_at=?
-        WHERE id=? AND attempt_count>=4 AND (status='pending' OR (status='processing' AND lease_until<=?))`)
-        .bind(now, jobId, now).run();
-      if (exhausted.meta.changes === 1) return { disposition: "failed", ack: true, failureKind: "permanent", errorCode: "retry_exhausted" };
-      return this.claimJob(jobId, leaseSeconds, now);
-    }
-
-    const token = this.claimToken();
-    const leaseUntil = new Date(Date.parse(now) + leaseSeconds * 1000).toISOString();
-    const claimed = await this.db.prepare(`UPDATE ingestion_jobs SET status='processing',attempt_count=attempt_count+1,
-      lease_token=?,lease_until=?,error_code=NULL,failure_kind=NULL,updated_at=?
-      WHERE id=? AND attempt_count<4 AND (status='pending' OR (status='processing' AND lease_until<=?))`)
-      .bind(token, leaseUntil, now, jobId, now).run();
-    if (claimed.meta.changes !== 1) return this.claimJob(jobId, leaseSeconds, now);
-    const row = await this.db.prepare("SELECT attempt_count FROM ingestion_jobs WHERE id=? AND lease_token=?")
-      .bind(jobId, token).first<{ attempt_count: number }>();
-    return { disposition: "acquired", leaseToken: token, leaseUntil, attemptCount: row!.attempt_count };
+    return claimDisposition(await this.readClaimState(jobId), now) ?? { disposition: "busy", delaySeconds: 1 };
   }
 
   async renewJob(jobId: string, token: string, now: string): Promise<string> {
+    now = normalizeNow(now);
     const leaseUntil = new Date(Date.parse(now) + 300_000).toISOString();
     const result = await this.db.prepare(`UPDATE ingestion_jobs SET lease_until=?,updated_at=?
       WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
@@ -121,6 +125,7 @@ export class KnowledgeRepository {
   }
 
   async failJob(jobId: string, errorCode: string, failureKind: "retryable" | "permanent", token: string, now: string): Promise<void> {
+    now = normalizeNow(now);
     const result = await this.db.prepare(`UPDATE ingestion_jobs SET status='failed',error_code=?,failure_kind=?,
       lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
       .bind(errorCode, failureKind, now, jobId, token, now).run();
@@ -128,6 +133,7 @@ export class KnowledgeRepository {
   }
 
   async beginVersion(jobId: string, token: string, now: string): Promise<number> {
+    now = normalizeNow(now);
     const results = await this.db.batch([
       this.db.prepare(`UPDATE ingestion_jobs SET index_version=COALESCE(index_version,
         (SELECT next_version FROM knowledge_documents WHERE id=ingestion_jobs.document_id)),updated_at=?
@@ -144,14 +150,17 @@ export class KnowledgeRepository {
   }
 
   async publishVersion(jobId: string, token: string, now: string): Promise<void> {
+    now = normalizeNow(now);
     const result = await this.db.prepare(`UPDATE knowledge_documents SET active_version=(SELECT index_version FROM ingestion_jobs WHERE id=?),
       status='ready',error_code=NULL,updated_at=? WHERE id=(SELECT document_id FROM ingestion_jobs WHERE id=?)
-      AND EXISTS (SELECT 1 FROM ingestion_jobs WHERE id=? AND status='processing' AND lease_token=? AND lease_until>? AND index_version IS NOT NULL)`)
-      .bind(jobId, now, jobId, jobId, token, now).run();
+      AND EXISTS (SELECT 1 FROM ingestion_jobs WHERE id=? AND status='processing' AND lease_token=? AND lease_until>? AND index_version IS NOT NULL)
+      AND (active_version IS NULL OR active_version<=(SELECT index_version FROM ingestion_jobs WHERE id=?))`)
+      .bind(jobId, now, jobId, jobId, token, now, jobId).run();
     this.assertLiveMutation(result.meta.changes);
   }
 
   async completeJob(jobId: string, token: string, now: string): Promise<void> {
+    now = normalizeNow(now);
     const result = await this.db.prepare(`UPDATE ingestion_jobs SET status='completed',lease_token=NULL,lease_until=NULL,
       error_code=NULL,failure_kind=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
       .bind(now, jobId, token, now).run();
@@ -160,6 +169,11 @@ export class KnowledgeRepository {
 
   private assertLiveMutation(changes: number): void {
     if (changes !== 1) throw new StaleIngestionClaimError();
+  }
+
+  private readClaimState(jobId: string): Promise<ClaimState | null> {
+    return this.db.prepare(`SELECT status,attempt_count,lease_until,error_code,failure_kind
+      FROM ingestion_jobs WHERE id=?`).bind(jobId).first<ClaimState>();
   }
 
   async claimUpload(document: CreatePendingDocumentInput, jobId: string, now: string, extension: string): Promise<{ disposition: "winner"; token: string; r2Key: string; previousR2Key: string | null } | { disposition: "busy" | "resume_queue" | "duplicate" }> {
@@ -252,4 +266,23 @@ function mapDocument(row: DocumentRow): KnowledgeDocument {
     contentHash: row.content_hash, pageCount: row.page_count, errorCode: row.error_code,
     status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
   };
+}
+
+function normalizeNow(value: string): string {
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) throw new RangeError("now must be a valid date");
+  return new Date(milliseconds).toISOString();
+}
+
+function claimDisposition(current: ClaimState | null, now: string): ClaimJobResult | null {
+  if (!current) return { disposition: "failed", ack: true, failureKind: "permanent", errorCode: "not_found" };
+  if (current.status === "completed") return { disposition: "completed", ack: true };
+  if (current.status === "failed") return {
+    disposition: "failed", ack: true, failureKind: current.failure_kind ?? "permanent", errorCode: current.error_code ?? "unknown",
+  };
+  if (current.status === "processing" && current.lease_until! > now) return {
+    disposition: "busy",
+    delaySeconds: Math.max(1, Math.ceil((Date.parse(current.lease_until!) - Date.parse(now)) / 1000)),
+  };
+  return null;
 }

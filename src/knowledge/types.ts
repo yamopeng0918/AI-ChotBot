@@ -25,6 +25,7 @@ export type KnowledgeChunk = {
   pageNumber: number | null;
   sectionPath: string | null;
   paragraphIndex: number | null;
+  segmentIndex: number;
   vectorId: string;
   contentHash: string;
   createdAt: string;
@@ -43,7 +44,7 @@ export type IngestionJob = {
   updatedAt: string;
 };
 
-export type IngestionJobMessage = { jobId: string; documentId: string; operation: IngestionOperation };
+export type IngestionJobMessage = { jobId: string; documentId: string; kind: IngestionOperation };
 
 export type KnowledgeEvidence = {
   id: string;

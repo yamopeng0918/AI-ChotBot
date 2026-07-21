@@ -5,6 +5,7 @@ import knowledge from "../../migrations/0002_knowledge.sql?raw";
 import claims from "../../migrations/0003_upload_claim_fencing.sql?raw";
 import snapshots from "../../migrations/0004_url_snapshots.sql?raw";
 import lifecycle from "../../migrations/0005_ingestion_lifecycle.sql?raw";
+import staging from "../../migrations/0006_knowledge_chunk_segments.sql?raw";
 import { KnowledgeRepository, StaleIngestionClaimError } from "../../src/knowledge/repository";
 
 describe("fenced ingestion repository", () => {
@@ -14,8 +15,8 @@ describe("fenced ingestion repository", () => {
   beforeEach(async () => {
     mf = new Miniflare({ modules: true, script: "export default {fetch(){return new Response('ok')}}", d1Databases: ["DB"] });
     db = await mf.getD1Database("DB");
-    for (const sql of [questions, knowledge, claims, snapshots, lifecycle]) await migrate(db, sql);
-    tokens = ["token-1", "token-2", "token-3", "token-4", "token-5"];
+    for (const sql of [questions, knowledge, claims, snapshots, lifecycle, staging]) await migrate(db, sql);
+    tokens = ["token-1", "token-2", "token-3", "token-4", "token-5", "token-6", "token-7", "token-8"];
     repository = new KnowledgeRepository(db, () => tokens.shift()!);
     await repository.createPendingDocument({ id: "doc", sourceType: "file", displayName: "Doc", sourceUrl: null, r2Key: "doc.pdf", createdAt: t0 });
     await repository.createJob({ id: "job", documentId: "doc", operation: "ingest", createdAt: t0 });
@@ -122,6 +123,98 @@ describe("fenced ingestion repository", () => {
   test("canonicalizes offset times before lease comparison and renewal", async () => {
     expect(await repository.claimJob("job", 300, "2026-07-21T08:00:00+08:00")).toEqual(expect.objectContaining({ leaseUntil: "2026-07-21T00:05:00.000Z" }));
     expect(await repository.renewJob("job", "token-1", "2026-07-21T08:01:00+08:00")).toBe("2026-07-21T00:06:00.000Z");
+  });
+
+  test("stages fenced chunks, verifies their expected count, and publishes only a complete stage", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    const chunk = { id: "chunk", documentId: "doc", indexVersion: 1, text: "text", pageNumber: 1, sectionPath: "s", paragraphIndex: 0, segmentIndex: 2, vectorId: "a".repeat(64), contentHash: "hash", createdAt: t0 };
+    await repository.stageChunks("job", "token-1", [chunk], t0);
+    await repository.registerGeneration("job", "token-1", 1, ["a".repeat(64)], t0);
+    expect(await repository.countStagedChunks("job", "token-1", t0)).toBe(1);
+    await expect(repository.publishVersion("job", "token-1", 2, t0)).rejects.toBeInstanceOf(StaleIngestionClaimError);
+    expect((await repository.getDocument("doc"))!.activeVersion).toBeNull();
+    await repository.publishVersion("job", "token-1", 1, t0);
+    expect(await db.prepare("SELECT segment_index FROM knowledge_chunks WHERE id='chunk'").first()).toEqual({ segment_index: 2 });
+  });
+
+  test("retry release and staging cleanup are fenced and return the live job to pending", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    const chunk = { id: "chunk", documentId: "doc", indexVersion: 1, text: "text", pageNumber: 1, sectionPath: null, paragraphIndex: 0, segmentIndex: 0, vectorId: "a".repeat(64), contentHash: "hash", createdAt: t0 };
+    await repository.stageChunks("job", "token-1", [chunk], t0);
+    await expect(repository.cleanupStaging("job", "wrong", t0)).rejects.toBeInstanceOf(StaleIngestionClaimError);
+    await repository.cleanupStaging("job", "token-1", t0);
+    expect(await repository.countStagedChunks("job", "token-1", t0)).toBe(0);
+    await repository.releaseJob("job", "embedding_upstream", "token-1", t0);
+    expect(await row("job")).toEqual(expect.objectContaining({ status: "pending", error_code: "embedding_upstream", failure_kind: "retryable", lease_token: null, lease_until: null }));
+  });
+
+  test("numeric publish atomically marks both the document ready and job completed", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    await repository.registerGeneration("job", "token-1", 1, [], t0);
+    await repository.publishVersion("job", "token-1", 0, t0);
+    expect((await repository.getDocument("doc"))!.activeVersion).toBe(1);
+    expect(await row("job")).toEqual(expect.objectContaining({ status: "completed", lease_token: null, lease_until: null }));
+  });
+
+  test("enumerates stored vector IDs by document and optional version", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    const chunk = { id: "chunk", documentId: "doc", indexVersion: 1, text: "text", pageNumber: 1, sectionPath: null, paragraphIndex: 0, segmentIndex: 0, vectorId: "a".repeat(64), contentHash: "hash", createdAt: t0 };
+    await repository.stageChunks("job", "token-1", [chunk], t0);
+    expect(await repository.listVectorIds("doc", 1)).toEqual(["a".repeat(64)]);
+    expect(await repository.listVectorIds("doc")).toEqual(["a".repeat(64)]);
+  });
+
+  test("authorizes only the live generation for durable cleanup and fences a reclaimed predecessor", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    const ids = ["a".repeat(64)];
+    await repository.registerGeneration("job", "token-1", 1, ids, t0);
+    expect(await repository.authorizeGenerationCleanup("job", "token-1", 1, ids, "upstream", "pending", "2026-07-21T00:01:00.000Z")).toEqual({ disposition: "authorized" });
+    expect(await repository.claimGenerationCleanup("job", "2026-07-21T00:01:01.000Z")).toEqual({ disposition: "acquired", cleanupToken: "token-2", vectorIds: ids });
+    await repository.releaseGenerationCleanup("job", "token-2", "2026-07-21T00:01:02.000Z");
+
+    await db.prepare("DELETE FROM ingestion_generation_cleanups WHERE job_id='job'").run();
+    await repository.claimJob("job", 300, "2026-07-21T00:02:00.000Z");
+    await repository.claimJob("job", 300, "2026-07-21T00:07:00.000Z");
+    expect(await repository.authorizeGenerationCleanup("job", "token-3", 1, ids, "late", "pending", "2026-07-21T00:07:01.000Z")).toEqual({ disposition: "stale" });
+  });
+
+  test("ambiguous publication is recoverably idempotent and cannot authorize deletion of the active generation", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    await repository.registerGeneration("job", "token-1", 1, [], t0);
+    await repository.publishVersion("job", "token-1", 0, t0);
+    await expect(repository.publishVersion("job", "token-1", 0, t0)).resolves.toBeUndefined();
+    expect(await repository.authorizeGenerationCleanup("job", "token-1", 1, ["a".repeat(64)], "ambiguous", "pending", t0)).toEqual({ disposition: "published" });
+    expect(await db.prepare("SELECT COUNT(*) count FROM ingestion_generation_cleanups").first()).toEqual({ count: 0 });
+  });
+
+  test("terminal jobs retain failed cleanup as independently retryable work", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    await repository.registerGeneration("job", "token-1", 1, ["a".repeat(64)], t0);
+    expect(await repository.authorizeGenerationCleanup("job", "token-1", 1, ["a".repeat(64)], "invalid", "failed", t0)).toEqual({ disposition: "authorized" });
+    expect((await repository.claimJob("job", 300, t0)).disposition).toBe("failed");
+    const cleanup = await repository.claimGenerationCleanup("job", t0);
+    expect(cleanup).toEqual({ disposition: "acquired", cleanupToken: "token-2", vectorIds: ["a".repeat(64)] });
+    await repository.releaseGenerationCleanup("job", "token-2", t0);
+    expect((await repository.claimGenerationCleanup("job", t0)).disposition).toBe("acquired");
+  });
+
+  test("staged rows survive four cleanup failures and are removed before terminal cleanup can ack", async () => {
+    await repository.claimJob("job", 300, t0); await repository.beginVersion("job", "token-1", t0);
+    const chunk = { id: "chunk", documentId: "doc", indexVersion: 1, text: "text", pageNumber: 1, sectionPath: null, paragraphIndex: 0, segmentIndex: 0, vectorId: "a".repeat(64), contentHash: "hash", createdAt: t0 };
+    await repository.registerGeneration("job", "token-1", 1, [chunk.vectorId], t0);
+    await repository.stageChunks("job", "token-1", [chunk], t0);
+    await repository.authorizeGenerationCleanup("job", "token-1", 1, [chunk.vectorId], "retry_exhausted", "failed", t0);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const cleanup = await repository.claimGenerationCleanup("job", t0);
+      expect(cleanup.disposition).toBe("acquired");
+      await repository.releaseGenerationCleanup("job", (cleanup as { cleanupToken: string }).cleanupToken, t0);
+      expect(await db.prepare("SELECT COUNT(*) count FROM knowledge_chunks WHERE id='chunk'").first()).toEqual({ count: 1 });
+    }
+    const finalCleanup = await repository.claimGenerationCleanup("job", t0) as { disposition: "acquired"; cleanupToken: string };
+    await repository.completeGenerationCleanup("job", finalCleanup.cleanupToken, t0);
+    expect(await db.prepare("SELECT COUNT(*) count FROM knowledge_chunks WHERE id='chunk'").first()).toEqual({ count: 0 });
+    expect(await repository.claimGenerationCleanup("job", t0)).toEqual({ disposition: "none" });
+    expect((await repository.claimJob("job", 300, t0)).disposition).toBe("failed");
   });
 
   test("bounds claim retries and token generation during repeated CAS loss", async () => {

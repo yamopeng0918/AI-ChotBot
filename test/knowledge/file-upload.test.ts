@@ -37,7 +37,7 @@ describe("POST /admin/knowledge/files", () => {
     expect(d.order).toEqual(["validate", "claim", "r2", "complete", "queue"]);
     const key = (d.objectStore.putOriginal.mock.calls as unknown as [string, Blob, object][])[0]![0];
     expect(key).toBe("claimed.pdf"); expect(key).not.toContain("original");
-    expect(d.ingestionQueue.send).toHaveBeenCalledWith(expect.objectContaining({ documentId: body.documentId, operation: "ingest", jobId: expect.any(String) }));
+    expect(d.ingestionQueue.send).toHaveBeenCalledWith(expect.objectContaining({ documentId: body.documentId, kind: "ingest", jobId: expect.any(String) }));
     expect(JSON.stringify(d.ingestionQueue.send.mock.calls)).not.toMatch(/original|PDF|admin/);
   });
 
@@ -51,7 +51,7 @@ describe("POST /admin/knowledge/files", () => {
   test("resumes a pending stable job by re-sending IDs without R2 or another job", async () => {
     const d = setup({ resumeQueue: true }); const response = await d.upload("resume"); expect(response.status).toBe(202);
     expect(d.objectStore.putOriginal).not.toHaveBeenCalled(); expect(d.repository.completeUpload).not.toHaveBeenCalled();
-    expect(d.ingestionQueue.send).toHaveBeenCalledWith(expect.objectContaining({ jobId: expect.any(String), documentId: expect.any(String), operation: "ingest" }));
+    expect(d.ingestionQueue.send).toHaveBeenCalledWith(expect.objectContaining({ jobId: expect.any(String), documentId: expect.any(String), kind: "ingest" }));
   });
 
   test("fails metadata, deletes the new object, and hides queue/cleanup errors", async () => {

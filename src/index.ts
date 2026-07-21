@@ -15,6 +15,11 @@ import { KnowledgeRepository } from "./knowledge/repository";
 import { R2KnowledgeObjectStore, type KnowledgeObjectStore } from "./knowledge/storage";
 import type { ValidatedKnowledgeFile } from "./knowledge/file-validation";
 import { TavilySafeUrlFetcher, type SafeUrlFetcher } from "./knowledge/url-safety";
+import { DocumentConverter } from "./knowledge/converter";
+import { EmbeddingService } from "./knowledge/embeddings";
+import { processIngestionJob, type IngestionDependencies } from "./knowledge/ingestion";
+import { KnowledgeVectorStore } from "./knowledge/vector-store";
+import type { IngestionJobMessage } from "./knowledge/types";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
@@ -30,6 +35,7 @@ type WorkerDependencies = {
   ingestionQueue?: Pick<Queue<import("./knowledge/types").IngestionJobMessage>, "send">;
   validateFile?: (file: File) => Promise<ValidatedKnowledgeFile>;
   safeUrlFetcher?: SafeUrlFetcher | ((env: Env) => SafeUrlFetcher);
+  ingestion?: IngestionDependencies | ((env: Env) => IngestionDependencies);
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -45,6 +51,13 @@ export function createWorker(overrides: WorkerDependencies = {}) {
   const objectStoreFor = (env: Env): KnowledgeObjectStore => typeof overrides.objectStore === "function" ? overrides.objectStore(env) : overrides.objectStore ?? new R2KnowledgeObjectStore(env.FILES);
 
 const safeUrlFetcherFor = (env: Env): SafeUrlFetcher => typeof overrides.safeUrlFetcher === "function" ? overrides.safeUrlFetcher(env) : overrides.safeUrlFetcher ?? new TavilySafeUrlFetcher(overrides.fetcher ?? fetch, env.TAVILY_API_KEY, overrides.now);
+const ingestionFor = (env: Env): IngestionDependencies => {
+  if (typeof overrides.ingestion === "function") return overrides.ingestion(env);
+  if (overrides.ingestion) return overrides.ingestion;
+  const repository = new KnowledgeRepository(env.DB);
+  return { repository, objectStore: new R2KnowledgeObjectStore(env.FILES), converter: new DocumentConverter(env.AI),
+    embeddings: new EmbeddingService(env.AI), vectors: new KnowledgeVectorStore(env.VECTORIZE, (documentId, version) => repository.listVectorIds(documentId, version)), now: overrides.now };
+};
 registerKnowledgeAdminRoutes(app, { repositoryFor: knowledgeFor, objectStoreFor, queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE, validateFile: overrides.validateFile, safeUrlFetcherFor, now: overrides.now });
 
 app.get("/health", (context) => context.json({ status: "ok" }));
@@ -90,7 +103,7 @@ return {
   fetch(request, env, context) {
     return app.fetch(request, env, context);
   },
-  async queue(batch: MessageBatch<QuestionJob>, env: Env, _context: ExecutionContext) {
+  async queue(batch: MessageBatch<QuestionJob | IngestionJobMessage>, env: Env, _context: ExecutionContext) {
     const fetcher = overrides.fetcher ?? env.FETCHER ?? fetch;
     const dependencies = {
       answerService: new OpenRouterAnswerService(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
@@ -102,6 +115,12 @@ return {
 
     for (const message of batch.messages) {
       try {
+        if (isIngestionJob(message.body)) {
+          const result = await processIngestionJob(message.body, ingestionFor(env));
+          if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
+          continue;
+        }
+        if (!isQuestionJob(message.body)) { message.retry({ delaySeconds: 1 }); continue; }
         const result = await processQuestion(message.body, dependencies);
         if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
       } catch {
@@ -112,7 +131,20 @@ return {
   async scheduled(_controller, env) {
     await questionsFor(env).purgeExpired((overrides.now?.() ?? new Date()).toISOString());
   },
-} satisfies ExportedHandler<Env, QuestionJob>;
+} satisfies ExportedHandler<Env, QuestionJob | IngestionJobMessage>;
+}
+
+function isIngestionJob(value: unknown): value is IngestionJobMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.jobId === "string" && typeof item.documentId === "string"
+    && (item.kind === "ingest" || item.kind === "reindex");
+}
+function isQuestionJob(value: unknown): value is QuestionJob {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.webhookEventId === "string" && typeof item.messageId === "string"
+    && typeof item.text === "string" && typeof item.receivedAt === "string";
 }
 
 const worker = createWorker();

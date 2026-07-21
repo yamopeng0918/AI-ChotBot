@@ -74,7 +74,7 @@ export function registerKnowledgeAdminRoutes(
       const contentHash = hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
       const claim = await repository.claimUpload({ id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key: null, contentHash, createdAt }, jobId, createdAt, validated.extension);
       if (claim.disposition === "resume_queue") {
-        try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); }
+        try { await dependencies.queueFor(context.env).send({ jobId, documentId, kind: "ingest" }); }
         catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
         return context.json({ documentId, status: "pending" }, 202);
       }
@@ -90,7 +90,7 @@ export function registerKnowledgeAdminRoutes(
         await Promise.allSettled([repository.failUpload(documentId, jobId, "upload_failed", (dependencies.now?.() ?? new Date()).toISOString(), token), store.deleteOriginal(r2Key)]);
         return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
       }
-      try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); }
+      try { await dependencies.queueFor(context.env).send({ jobId, documentId, kind: "ingest" }); }
       catch {
         await Promise.allSettled([repository.failUpload(documentId, jobId, "queue_send_failed", (dependencies.now?.() ?? new Date()).toISOString(), token), store.deleteOriginal(r2Key)]);
         return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503);
@@ -115,7 +115,7 @@ export function registerKnowledgeAdminRoutes(
     try {
       const claim = await repository.claimUpload({ id: documentId, sourceType: "url", displayName: new URL(normalized).hostname, sourceUrl: normalized, r2Key: null, contentHash: null, createdAt }, jobId, createdAt, ".md");
       if (claim.disposition === "resume_queue") {
-        try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); } catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
+        try { await dependencies.queueFor(context.env).send({ jobId, documentId, kind: "ingest" }); } catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
         return context.json({ documentId, status: "pending" }, 202);
       }
       if (claim.disposition !== "winner") return context.json({ documentId, status: "pending" }, 202);
@@ -145,7 +145,7 @@ export function registerKnowledgeAdminRoutes(
         await Promise.allSettled([repository.failUpload(documentId, jobId, "upload_failed", (dependencies.now?.() ?? new Date()).toISOString(), token), store.deleteOriginal(r2Key)]);
         return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
       }
-      try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); } catch {
+      try { await dependencies.queueFor(context.env).send({ jobId, documentId, kind: "ingest" }); } catch {
         await Promise.allSettled([repository.failUpload(documentId, jobId, "queue_send_failed", (dependencies.now?.() ?? new Date()).toISOString(), token), store.deleteOriginal(r2Key)]);
         return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503);
       }

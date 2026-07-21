@@ -1,4 +1,4 @@
-import type { IngestionJob, IngestionOperation, KnowledgeDocument } from "./types";
+import type { IngestionJob, IngestionOperation, KnowledgeChunk, KnowledgeDocument } from "./types";
 
 type DocumentRow = {
   id: string; source_type: KnowledgeDocument["sourceType"]; display_name: string;
@@ -29,6 +29,9 @@ export type ClaimJobResult =
   | { disposition: "busy"; delaySeconds: number }
   | { disposition: "completed"; ack: true }
   | { disposition: "failed"; ack: true; failureKind: "retryable" | "permanent"; errorCode: string };
+
+export type CleanupClaimResult = { disposition: "none" } | { disposition: "busy"; delaySeconds: number }
+  | { disposition: "acquired"; cleanupToken: string; vectorIds: string[] };
 
 type ClaimState = {
   status: IngestionJob["status"];
@@ -114,6 +117,77 @@ export class KnowledgeRepository {
     return claimDisposition(await this.readClaimState(jobId), now) ?? { disposition: "busy", delaySeconds: 1 };
   }
 
+  async claimGenerationCleanup(jobId: string, now: string): Promise<CleanupClaimResult> {
+    now = normalizeNow(now);
+    await this.db.prepare(`UPDATE ingestion_generation_cleanups SET status='pending' WHERE job_id=? AND status='armed'
+      AND NOT EXISTS(SELECT 1 FROM ingestion_jobs j WHERE j.id=job_id AND j.status='processing'
+        AND j.lease_token=owner_token AND j.lease_until>?)`).bind(jobId, now).run();
+    const row = await this.db.prepare("SELECT status,cleanup_until,vector_ids FROM ingestion_generation_cleanups WHERE job_id=?")
+      .bind(jobId).first<{ status: "armed" | "pending" | "processing"; cleanup_until: string | null; vector_ids: string }>();
+    if (!row) return { disposition: "none" };
+    if (row.status === "armed") return { disposition: "none" };
+    if (row.status === "processing" && row.cleanup_until! > now) return { disposition: "busy", delaySeconds: Math.max(1, Math.ceil((Date.parse(row.cleanup_until!) - Date.parse(now)) / 1000)) };
+    const cleanupToken = this.claimToken(), cleanupUntil = new Date(Date.parse(now) + 300_000).toISOString();
+    const result = await this.db.prepare(`UPDATE ingestion_generation_cleanups SET status='processing',cleanup_token=?,cleanup_until=?
+      WHERE job_id=? AND (status='pending' OR (status='processing' AND cleanup_until<=?))`)
+      .bind(cleanupToken, cleanupUntil, jobId, now).run();
+    if (result.meta.changes !== 1) return { disposition: "busy", delaySeconds: 1 };
+    return { disposition: "acquired", cleanupToken, vectorIds: JSON.parse(row.vector_ids) as string[] };
+  }
+
+  async registerGeneration(jobId: string, token: string, indexVersion: number, vectorIds: string[], now: string): Promise<void> {
+    now = normalizeNow(now);
+    const result = await this.db.prepare(`INSERT INTO ingestion_generation_cleanups
+      (job_id,document_id,index_version,vector_ids,owner_token,final_status,error_code,status)
+      SELECT id,document_id,index_version,?,?,'pending','generation_incomplete','armed' FROM ingestion_jobs
+      WHERE id=? AND status='processing' AND lease_token=? AND lease_until>? AND index_version=?
+      ON CONFLICT(job_id) DO UPDATE SET vector_ids=excluded.vector_ids,owner_token=excluded.owner_token,status='armed',
+        cleanup_token=NULL,cleanup_until=NULL WHERE ingestion_generation_cleanups.owner_token=excluded.owner_token`)
+      .bind(JSON.stringify(vectorIds), token, jobId, token, now, indexVersion).run();
+    this.assertLiveMutation(result.meta.changes);
+  }
+
+  async authorizeGenerationCleanup(jobId: string, token: string, indexVersion: number, vectorIds: string[], errorCode: string,
+    finalStatus: "pending" | "failed", now: string): Promise<{ disposition: "authorized" | "published" | "stale" }> {
+    now = normalizeNow(now);
+    const state = await this.db.prepare(`SELECT j.status,j.lease_token,j.lease_until,j.document_id,j.index_version,d.active_version
+      FROM ingestion_jobs j JOIN knowledge_documents d ON d.id=j.document_id WHERE j.id=?`).bind(jobId)
+      .first<{ status: IngestionJob["status"]; lease_token: string | null; lease_until: string | null; document_id: string; index_version: number | null; active_version: number | null }>();
+    if (state?.status === "completed" && state.index_version === indexVersion && state.active_version === indexVersion) return { disposition: "published" };
+    if (!state || state.index_version !== indexVersion || state.active_version === indexVersion) return { disposition: "stale" };
+    const results = await this.db.batch([
+      this.db.prepare(`UPDATE ingestion_generation_cleanups SET status='pending',final_status=?,error_code=?
+        WHERE job_id=? AND index_version=? AND owner_token=? AND vector_ids=? AND status='armed'
+        AND NOT EXISTS(SELECT 1 FROM knowledge_documents WHERE id=document_id AND active_version=index_version)`)
+        .bind(finalStatus, errorCode, jobId, indexVersion, token, JSON.stringify(vectorIds)),
+      this.db.prepare(`UPDATE ingestion_jobs SET status=?,error_code=?,failure_kind=?,lease_token=NULL,lease_until=NULL,updated_at=?
+        WHERE id=? AND status='processing' AND lease_token=? AND lease_until>? AND index_version=?
+        AND EXISTS(SELECT 1 FROM ingestion_generation_cleanups WHERE job_id=? AND status='pending')`)
+        .bind(finalStatus, errorCode, finalStatus === "failed" ? "permanent" : "retryable", now, jobId, token, now, indexVersion, jobId),
+    ]);
+    return results[0]!.meta.changes === 1 ? { disposition: "authorized" } : { disposition: "stale" };
+  }
+
+  async completeGenerationCleanup(jobId: string, cleanupToken: string, now: string): Promise<void> {
+    now = normalizeNow(now);
+    const results = await this.db.batch([
+      this.db.prepare(`DELETE FROM knowledge_chunks WHERE vector_id IN
+        (SELECT value FROM json_each((SELECT vector_ids FROM ingestion_generation_cleanups WHERE job_id=?)))
+        AND EXISTS(SELECT 1 FROM ingestion_generation_cleanups WHERE job_id=? AND status='processing' AND cleanup_token=? AND cleanup_until>?)`)
+        .bind(jobId, jobId, cleanupToken, now),
+      this.db.prepare(`DELETE FROM ingestion_generation_cleanups WHERE job_id=? AND status='processing' AND cleanup_token=? AND cleanup_until>?`)
+        .bind(jobId, cleanupToken, now),
+    ]);
+    this.assertLiveMutation(results[1]!.meta.changes);
+  }
+
+  async releaseGenerationCleanup(jobId: string, cleanupToken: string, now: string): Promise<void> {
+    now = normalizeNow(now);
+    const result = await this.db.prepare(`UPDATE ingestion_generation_cleanups SET status='pending',cleanup_token=NULL,cleanup_until=NULL
+      WHERE job_id=? AND status='processing' AND cleanup_token=? AND cleanup_until>?`).bind(jobId, cleanupToken, now).run();
+    this.assertLiveMutation(result.meta.changes);
+  }
+
   async renewJob(jobId: string, token: string, now: string): Promise<string> {
     now = normalizeNow(now);
     const leaseUntil = new Date(Date.parse(now) + 300_000).toISOString();
@@ -129,6 +203,14 @@ export class KnowledgeRepository {
     const result = await this.db.prepare(`UPDATE ingestion_jobs SET status='failed',error_code=?,failure_kind=?,
       lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
       .bind(errorCode, failureKind, now, jobId, token, now).run();
+    this.assertLiveMutation(result.meta.changes);
+  }
+
+  async releaseJob(jobId: string, errorCode: string, token: string, now: string): Promise<void> {
+    now = normalizeNow(now);
+    const result = await this.db.prepare(`UPDATE ingestion_jobs SET status='pending',error_code=?,failure_kind='retryable',
+      lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
+      .bind(errorCode, now, jobId, token, now).run();
     this.assertLiveMutation(result.meta.changes);
   }
 
@@ -149,14 +231,81 @@ export class KnowledgeRepository {
     return row!.index_version;
   }
 
-  async publishVersion(jobId: string, token: string, now: string): Promise<void> {
+  async stageChunks(jobId: string, token: string, chunks: KnowledgeChunk[], now: string): Promise<void> {
+    now = normalizeNow(now); await this.assertLiveJob(jobId, token, now);
+    const job = await this.db.prepare("SELECT document_id,index_version FROM ingestion_jobs WHERE id=? AND lease_token=?")
+      .bind(jobId, token).first<{ document_id: string; index_version: number | null }>();
+    if (!job?.index_version || chunks.some((chunk) => chunk.documentId !== job.document_id || chunk.indexVersion !== job.index_version)) throw new StaleIngestionClaimError();
+    const statements = [
+      this.db.prepare(`DELETE FROM knowledge_chunks WHERE document_id=? AND index_version=?
+        AND EXISTS(SELECT 1 FROM ingestion_jobs WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?)`)
+        .bind(job.document_id, job.index_version, jobId, token, now),
+      ...chunks.map((chunk) => this.db.prepare(`INSERT INTO knowledge_chunks
+        (id,document_id,index_version,text,page_number,section_path,paragraph_index,segment_index,vector_id,content_hash,created_at)
+        SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM ingestion_jobs
+          WHERE id=? AND document_id=? AND index_version=? AND status='processing' AND lease_token=? AND lease_until>?)`)
+        .bind(chunk.id, chunk.documentId, chunk.indexVersion, chunk.text, chunk.pageNumber, chunk.sectionPath,
+          chunk.paragraphIndex, chunk.segmentIndex, chunk.vectorId, chunk.contentHash, chunk.createdAt,
+          jobId, chunk.documentId, chunk.indexVersion, token, now)),
+    ];
+    const results = await this.db.batch(statements);
+    if (results.slice(1).some((result) => result.meta.changes !== 1)) throw new StaleIngestionClaimError();
+  }
+
+  async countStagedChunks(jobId: string, token: string, now: string): Promise<number> {
+    now = normalizeNow(now); await this.assertLiveJob(jobId, token, now);
+    const row = await this.db.prepare(`SELECT COUNT(*) count FROM knowledge_chunks WHERE document_id=(SELECT document_id FROM ingestion_jobs WHERE id=?)
+      AND index_version=(SELECT index_version FROM ingestion_jobs WHERE id=?)`).bind(jobId, jobId).first<{ count: number }>();
+    return row?.count ?? 0;
+  }
+
+  async cleanupStaging(jobId: string, token: string, now: string): Promise<void> {
+    now = normalizeNow(now); await this.assertLiveJob(jobId, token, now);
+    await this.db.prepare(`DELETE FROM knowledge_chunks WHERE document_id=(SELECT document_id FROM ingestion_jobs WHERE id=?)
+      AND index_version=(SELECT index_version FROM ingestion_jobs WHERE id=?)
+      AND EXISTS(SELECT 1 FROM ingestion_jobs WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?)`)
+      .bind(jobId, jobId, jobId, token, now).run();
+  }
+
+  async listVectorIds(documentId: string, indexVersion?: number): Promise<string[]> {
+    const statement = indexVersion === undefined
+      ? this.db.prepare("SELECT vector_id FROM knowledge_chunks WHERE document_id=? ORDER BY vector_id").bind(documentId)
+      : this.db.prepare("SELECT vector_id FROM knowledge_chunks WHERE document_id=? AND index_version=? ORDER BY vector_id").bind(documentId, indexVersion);
+    const result = await statement.all<{ vector_id: string }>();
+    return result.results.map((row) => row.vector_id);
+  }
+
+  async publishVersion(jobId: string, token: string, expectedCountOrNow: number | string, at?: string): Promise<void> {
+    const expectedCount = typeof expectedCountOrNow === "number" ? expectedCountOrNow : await this.countStagedChunks(jobId, token, expectedCountOrNow);
+    let now = typeof expectedCountOrNow === "string" ? expectedCountOrNow : at!;
     now = normalizeNow(now);
-    const result = await this.db.prepare(`UPDATE knowledge_documents SET active_version=(SELECT index_version FROM ingestion_jobs WHERE id=?),
+    if (typeof expectedCountOrNow === "number") {
+      const published = await this.db.prepare(`SELECT 1 ok FROM ingestion_jobs j JOIN knowledge_documents d ON d.id=j.document_id
+        WHERE j.id=? AND j.status='completed' AND j.index_version=d.active_version AND j.index_version IS NOT NULL`).bind(jobId).first();
+      if (published) return;
+    }
+    const publication = this.db.prepare(`UPDATE knowledge_documents SET active_version=(SELECT index_version FROM ingestion_jobs WHERE id=?),
       status='ready',error_code=NULL,updated_at=? WHERE id=(SELECT document_id FROM ingestion_jobs WHERE id=?)
       AND EXISTS (SELECT 1 FROM ingestion_jobs WHERE id=? AND status='processing' AND lease_token=? AND lease_until>? AND index_version IS NOT NULL)
+      AND ?=(SELECT COUNT(*) FROM knowledge_chunks WHERE document_id=knowledge_documents.id
+        AND index_version=(SELECT index_version FROM ingestion_jobs WHERE id=?))
+      AND (? OR EXISTS(SELECT 1 FROM ingestion_generation_cleanups WHERE job_id=? AND owner_token=? AND status='armed'))
       AND (active_version IS NULL OR active_version<=(SELECT index_version FROM ingestion_jobs WHERE id=?))`)
-      .bind(jobId, now, jobId, jobId, token, now, jobId).run();
-    this.assertLiveMutation(result.meta.changes);
+      .bind(jobId, now, jobId, jobId, token, now, expectedCount, jobId, typeof expectedCountOrNow === "string" ? 1 : 0, jobId, token, jobId);
+    if (typeof expectedCountOrNow === "string") {
+      const result = await publication.run(); this.assertLiveMutation(result.meta.changes); return;
+    }
+    const completion = this.db.prepare(`UPDATE ingestion_jobs SET status='completed',lease_token=NULL,lease_until=NULL,
+      error_code=NULL,failure_kind=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?
+      AND ?=(SELECT COUNT(*) FROM knowledge_chunks WHERE document_id=ingestion_jobs.document_id AND index_version=ingestion_jobs.index_version)
+      AND EXISTS(SELECT 1 FROM knowledge_documents WHERE id=ingestion_jobs.document_id AND active_version=ingestion_jobs.index_version)`)
+      .bind(now, jobId, token, now, expectedCount);
+    const retireGeneration = this.db.prepare(`DELETE FROM ingestion_generation_cleanups
+      WHERE job_id=? AND owner_token=? AND status='armed'
+      AND EXISTS(SELECT 1 FROM ingestion_jobs j JOIN knowledge_documents d ON d.id=j.document_id
+        WHERE j.id=? AND j.status='completed' AND j.index_version=d.active_version)`).bind(jobId, token, jobId);
+    const results = await this.db.batch([publication, completion, retireGeneration]);
+    this.assertLiveMutation(results[0]!.meta.changes); this.assertLiveMutation(results[1]!.meta.changes); this.assertLiveMutation(results[2]!.meta.changes);
   }
 
   async completeJob(jobId: string, token: string, now: string): Promise<void> {
@@ -169,6 +318,12 @@ export class KnowledgeRepository {
 
   private assertLiveMutation(changes: number): void {
     if (changes !== 1) throw new StaleIngestionClaimError();
+  }
+
+  private async assertLiveJob(jobId: string, token: string, now: string): Promise<void> {
+    const result = await this.db.prepare(`UPDATE ingestion_jobs SET updated_at=updated_at
+      WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`).bind(jobId, token, now).run();
+    this.assertLiveMutation(result.meta.changes);
   }
 
   private readClaimState(jobId: string): Promise<ClaimState | null> {

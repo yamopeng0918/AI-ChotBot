@@ -34,7 +34,7 @@ describe("POST /admin/knowledge/urls", () => {
     expect(d.repository.updateUploadClaim).toHaveBeenCalledWith(expect.any(String), "token", expect.objectContaining({ displayName: "Article", sourceUrl: "https://example.com/b?z=1&a=2", contentHash: expect.any(String) }));
     const blob = (d.objectStore.putOriginal.mock.calls as unknown as [string, Blob, object][])[0]![1]; expect(await blob.text()).toContain("<script>alert(1)</script>");
     expect(d.objectStore.putOriginal).toHaveBeenCalledWith("snapshot.md", expect.any(Blob), { originalName: "Article.md", mimeType: "text/markdown; charset=utf-8" });
-    expect(d.ingestionQueue.send).toHaveBeenCalledWith({ jobId: expect.any(String), documentId: body.documentId, operation: "ingest" });
+    expect(d.ingestionQueue.send).toHaveBeenCalledWith({ jobId: expect.any(String), documentId: body.documentId, kind: "ingest" });
     expect(JSON.stringify(d.ingestionQueue.send.mock.calls)).not.toContain("Safe");
   });
 

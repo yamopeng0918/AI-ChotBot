@@ -5,6 +5,7 @@ import knowledgeMigration from "../../migrations/0002_knowledge.sql?raw";
 import claimMigration from "../../migrations/0003_upload_claim_fencing.sql?raw";
 import urlSnapshotMigration from "../../migrations/0004_url_snapshots.sql?raw";
 import lifecycleMigration from "../../migrations/0005_ingestion_lifecycle.sql?raw";
+import segmentMigration from "../../migrations/0006_knowledge_chunk_segments.sql?raw";
 
 describe("knowledge migration", () => {
   let miniflare: Miniflare;
@@ -31,6 +32,7 @@ describe("knowledge migration", () => {
       ('url-job','legacy-url','reindex','failed',3,'old_error','c2','u2')`).run();
     await applyMigration(urlSnapshotMigration);
     await applyMigration(lifecycleMigration);
+    await applyMigration(segmentMigration);
   });
 
   afterEach(async () => {
@@ -39,10 +41,11 @@ describe("knowledge migration", () => {
 
   test("creates all knowledge tables", async () => {
     const result = await db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'knowledge_%' OR type = 'table' AND name = 'ingestion_jobs' ORDER BY name")
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND (name LIKE 'knowledge_%' OR name LIKE 'ingestion_%') ORDER BY name")
       .all<{ name: string }>();
 
     expect(result.results.map(({ name }) => name)).toEqual([
+      "ingestion_generation_cleanups",
       "ingestion_jobs",
       "knowledge_chunks",
       "knowledge_documents",
@@ -109,12 +112,15 @@ describe("knowledge migration", () => {
     expect((await db.prepare("SELECT count(*) count FROM ingestion_jobs WHERE document_id='legacy-url'").first<{count:number}>())!.count).toBe(0);
   });
 
-  test("upgrades 0001 through 0005 without losing data and initializes lifecycle columns", async () => {
+  test("upgrades 0001 through 0006 without losing data and initializes lifecycle and segment columns", async () => {
     expect(await db.prepare("SELECT id,next_version FROM knowledge_documents ORDER BY id").all()).toEqual(expect.objectContaining({
       results: [{ id: "legacy-file", next_version: 4 }, { id: "legacy-url", next_version: 1 }],
     }));
     expect(await db.prepare("SELECT id,index_version,failure_kind FROM ingestion_jobs ORDER BY id").all()).toEqual(expect.objectContaining({
       results: [{ id: "file-job", index_version: null, failure_kind: null }, { id: "url-job", index_version: null, failure_kind: null }],
+    }));
+    expect(await db.prepare("SELECT id,segment_index FROM knowledge_chunks ORDER BY id").all()).toEqual(expect.objectContaining({
+      results: [{ id: "file-chunk", segment_index: 0 }, { id: "url-chunk", segment_index: 0 }],
     }));
   });
 

@@ -111,6 +111,12 @@ export class KnowledgeRepository {
     return results[0]!.meta.changes === 1 && results[1]!.meta.changes === 1;
   }
 
+  async updateUploadClaim(documentId: string, token: string, input: { displayName: string; sourceUrl: string; contentHash: string; updatedAt: string }): Promise<boolean> {
+    const result = await this.db.prepare(`UPDATE knowledge_documents SET display_name=?, source_url=?, content_hash=?, updated_at=?
+      WHERE id=? AND status='processing' AND upload_claim_token=?`).bind(input.displayName, input.sourceUrl, input.contentHash, input.updatedAt, documentId, token).run();
+    return result.meta.changes === 1;
+  }
+
   async failUpload(documentId: string, jobId: string, errorCode: string, updatedAt: string, token: string): Promise<boolean> {
     await this.db.batch([
       this.db.prepare(`UPDATE ingestion_jobs SET status = 'failed', error_code = ?,

@@ -19,6 +19,15 @@ describe("knowledge migration", () => {
     await applyMigration(questionsMigration);
     await applyMigration(knowledgeMigration);
     await applyMigration(claimMigration);
+    await db.prepare(`INSERT INTO knowledge_documents (id,source_type,display_name,source_url,r2_key,content_hash,status,created_at,updated_at,upload_claim_token,upload_claim_until) VALUES
+      ('legacy-file','file','File',NULL,'file.pdf','fh','ready','c1','u1',NULL,NULL),
+      ('legacy-url','url','URL','https://example.com/',NULL,'uh','ready','c2','u2',NULL,NULL)`).run();
+    await db.prepare(`INSERT INTO knowledge_chunks (id,document_id,index_version,text,page_number,section_path,paragraph_index,vector_id,content_hash,created_at) VALUES
+      ('file-chunk','legacy-file',1,'file text',1,'s',0,'fv','fch','c1'),
+      ('url-chunk','legacy-url',2,'url text',NULL,NULL,NULL,'uv','uch','c2')`).run();
+    await db.prepare(`INSERT INTO ingestion_jobs (id,document_id,operation,status,attempt_count,error_code,created_at,updated_at) VALUES
+      ('file-job','legacy-file','ingest','completed',2,NULL,'c1','u1'),
+      ('url-job','legacy-url','reindex','failed',3,'old_error','c2','u2')`).run();
     await applyMigration(urlSnapshotMigration);
   });
 
@@ -83,19 +92,19 @@ describe("knowledge migration", () => {
   });
 
   test("preserves schema and permits URL source with a private snapshot", async () => {
+    expect((await db.prepare("SELECT * FROM knowledge_documents WHERE id IN ('legacy-file','legacy-url') ORDER BY id").all()).results).toEqual([
+      expect.objectContaining({ id: "legacy-file", source_type: "file", display_name: "File", source_url: null, r2_key: "file.pdf", content_hash: "fh", status: "ready", created_at: "c1", updated_at: "u1" }),
+      expect.objectContaining({ id: "legacy-url", source_type: "url", display_name: "URL", source_url: "https://example.com/", r2_key: null, content_hash: "uh", status: "ready", created_at: "c2", updated_at: "u2" }),
+    ]);
+    expect((await db.prepare("SELECT count(*) count FROM knowledge_chunks").first<{count:number}>())!.count).toBe(2);
+    expect((await db.prepare("SELECT count(*) count FROM ingestion_jobs").first<{count:number}>())!.count).toBe(2);
     await db.prepare(`INSERT INTO knowledge_documents
       (id, source_type, display_name, source_url, r2_key, status, created_at, updated_at, upload_claim_token)
       VALUES ('url-doc', 'url', 'Article', 'https://example.com/', 'url-doc.md', 'processing', 'now', 'now', 'token')`).run();
-    await db.prepare(`INSERT INTO knowledge_chunks
-      (id, document_id, index_version, text, vector_id, content_hash, created_at)
-      VALUES ('chunk', 'url-doc', 1, 'text', 'vector', 'hash', 'now')`).run();
-    await db.prepare(`INSERT INTO ingestion_jobs
-      (id, document_id, operation, status, created_at, updated_at)
-      VALUES ('job', 'url-doc', 'ingest', 'pending', 'now', 'now')`).run();
     expect(await db.prepare("SELECT upload_claim_token FROM knowledge_documents WHERE id='url-doc'").first()).toEqual({ upload_claim_token: "token" });
-    await expect(db.prepare("DELETE FROM knowledge_documents WHERE id='url-doc'").run()).resolves.toBeTruthy();
-    expect((await db.prepare("SELECT count(*) count FROM knowledge_chunks WHERE document_id='url-doc'").first<{count:number}>())!.count).toBe(0);
-    expect((await db.prepare("SELECT count(*) count FROM ingestion_jobs WHERE document_id='url-doc'").first<{count:number}>())!.count).toBe(0);
+    await expect(db.prepare("DELETE FROM knowledge_documents WHERE id='legacy-url'").run()).resolves.toBeTruthy();
+    expect((await db.prepare("SELECT count(*) count FROM knowledge_chunks WHERE document_id='legacy-url'").first<{count:number}>())!.count).toBe(0);
+    expect((await db.prepare("SELECT count(*) count FROM ingestion_jobs WHERE document_id='legacy-url'").first<{count:number}>())!.count).toBe(0);
   });
 
   async function insertDocument(): Promise<void> {

@@ -9,7 +9,7 @@ import type { IngestionJobMessage } from "./types";
 import { KnowledgeUrlError, normalizeKnowledgeUrl, type SafeUrlFetcher } from "./url-safety";
 
 export type KnowledgeReader = Pick<KnowledgeRepository, "listDocuments" | "getDocument">;
-export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "claimUpload" | "completeUpload" | "failUpload" | "clearUploadClaim">;
+export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "claimUpload" | "updateUploadClaim" | "completeUpload" | "failUpload" | "clearUploadClaim">;
 export type KnowledgeUploadDependencies = {
   repositoryFor: (env: Env) => KnowledgeAdminRepository;
   objectStoreFor: (env: Env) => KnowledgeObjectStore;
@@ -113,15 +113,26 @@ export function registerKnowledgeAdminRoutes(
     const [documentId, jobId] = await Promise.all([stableUuid("knowledge-document:", key), stableUuid("knowledge-job:", key)]);
     const repository = repositoryFor(context.env); const createdAt = (dependencies.now?.() ?? new Date()).toISOString();
     try {
-      const article = await dependencies.safeUrlFetcherFor(context.env).fetchStaticArticle(normalized);
-      const contentHash = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(article.html)));
-      const claim = await repository.claimUpload({ id: documentId, sourceType: "url", displayName: article.title, sourceUrl: article.finalUrl, r2Key: null, contentHash, createdAt }, jobId, createdAt, ".md");
+      const claim = await repository.claimUpload({ id: documentId, sourceType: "url", displayName: new URL(normalized).hostname, sourceUrl: normalized, r2Key: null, contentHash: null, createdAt }, jobId, createdAt, ".md");
       if (claim.disposition === "resume_queue") {
         try { await dependencies.queueFor(context.env).send({ jobId, documentId, operation: "ingest" }); } catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
         return context.json({ documentId, status: "pending" }, 202);
       }
       if (claim.disposition !== "winner") return context.json({ documentId, status: "pending" }, 202);
       const { token, r2Key, previousR2Key } = claim; const store = dependencies.objectStoreFor(context.env);
+      let article: Awaited<ReturnType<SafeUrlFetcher["fetchStaticArticle"]>>;
+      try { article = await dependencies.safeUrlFetcherFor(context.env).fetchStaticArticle(normalized); }
+      catch (error) {
+        await Promise.allSettled([repository.failUpload(documentId, jobId, "fetch_failed", (dependencies.now?.() ?? new Date()).toISOString(), token)]);
+        if (error instanceof KnowledgeUrlError) {
+          const status = error.code === "source_unavailable" ? 503 : 400;
+          const message = error.code === "source_disallowed" ? "Source disallowed" : error.code === "source_unavailable" ? "Source unavailable" : "Invalid source";
+          return context.json({ error: { code: error.code, message } }, status);
+        }
+        return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
+      }
+      const contentHash = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(article.html)));
+      if (!await repository.updateUploadClaim(documentId, token, { displayName: article.title, sourceUrl: article.finalUrl, contentHash, updatedAt: createdAt })) return context.json({ documentId, status: "pending" }, 202);
       try {
         if (previousR2Key && previousR2Key !== r2Key) await Promise.allSettled([store.deleteOriginal(previousR2Key)]);
         await store.putOriginal(r2Key, new Blob([article.html], { type: "text/markdown; charset=utf-8" }), { originalName: `${article.title}.md`, mimeType: "text/markdown; charset=utf-8" });

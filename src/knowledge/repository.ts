@@ -117,6 +117,12 @@ export class KnowledgeRepository {
     return result.meta.changes === 1;
   }
 
+  async abandonUploadClaim(documentId: string, token: string): Promise<boolean> {
+    const result = await this.db.prepare(`DELETE FROM knowledge_documents WHERE id=? AND status='processing' AND upload_claim_token=?
+      AND NOT EXISTS (SELECT 1 FROM ingestion_jobs WHERE document_id=knowledge_documents.id)`).bind(documentId, token).run();
+    return result.meta.changes === 1;
+  }
+
   async failUpload(documentId: string, jobId: string, errorCode: string, updatedAt: string, token: string): Promise<boolean> {
     await this.db.batch([
       this.db.prepare(`UPDATE ingestion_jobs SET status = 'failed', error_code = ?,

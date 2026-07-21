@@ -17,14 +17,14 @@ describe("DocumentConverter", () => {
     const data = "\n### Page 1\r\n# 標題  \r\nTraditional 中文 and English\r\n### Page 2\r\nSecond page";
     const converted = await new DocumentConverter({ toMarkdown: vi.fn().mockResolvedValue(success(data)) }).convert(source("pdf"));
     expect(converted.pages).toEqual([
-      { pageNumber: 1, markdown: "# 標題\nTraditional 中文 and English\n", ocrApplied: null, diagnostics: { ocrStatus: "unknown" } },
-      { pageNumber: 2, markdown: "Second page\n", ocrApplied: null, diagnostics: { ocrStatus: "unknown" } },
+      { pageNumber: 1, markdown: "# 標題\nTraditional 中文 and English\n", ocrApplied: null, diagnostics: expect.objectContaining({ ocrStatus: "unknown", replacementRatio: 0, controlRatio: 0, hasReadableContent: true }) },
+      { pageNumber: 2, markdown: "Second page\n", ocrApplied: null, diagnostics: { ocrStatus: "unknown", nonWhitespaceCharacters: 10, replacementRatio: 0, controlRatio: 0, hasReadableContent: true } },
     ]);
   });
 
   test.each(["docx", "text", "markdown"] as const)("keeps %s as one non-paged snapshot", async (kind) => {
     const converted = await new DocumentConverter({ toMarkdown: vi.fn().mockResolvedValue(success("### Page 9\n正文")) }).convert(source(kind));
-    expect(converted.pages).toEqual([{ pageNumber: null, markdown: "### Page 9\n正文", ocrApplied: false, diagnostics: {} }]);
+    expect(converted.pages[0]).toMatchObject({ pageNumber: null, markdown: "### Page 9\n正文", ocrApplied: false, diagnostics: { replacementRatio: 0, controlRatio: 0, hasReadableContent: true } });
   });
 
   test("preserves leading indentation and blank lines while removing line-trailing whitespace", async () => {
@@ -45,7 +45,13 @@ describe("DocumentConverter", () => {
 
   test.each(["jpeg", "png"] as const)("marks %s conversion as OCR page one", async (kind) => {
     const converted = await new DocumentConverter({ toMarkdown: vi.fn().mockResolvedValue(success("繁體中文 and English")) }).convert(source(kind));
-    expect(converted.pages).toEqual([{ pageNumber: 1, markdown: "繁體中文 and English", ocrApplied: true, diagnostics: {} }]);
+    expect(converted.pages[0]).toMatchObject({ pageNumber: 1, markdown: "繁體中文 and English", ocrApplied: true, diagnostics: { replacementRatio: 0, controlRatio: 0, hasReadableContent: true } });
+  });
+
+  test("reports exact accepted quality ratios at inclusive boundaries", async () => {
+    const data = `${"a".repeat(97)}��\u0001`;
+    const page = (await new DocumentConverter({ toMarkdown: vi.fn().mockResolvedValue(success(data)) }).convert(source("text"))).pages[0]!;
+    expect(page.diagnostics).toEqual({ nonWhitespaceCharacters: 100, replacementRatio: 0.02, controlRatio: 0.01, hasReadableContent: true });
   });
 
   test.each([
@@ -81,9 +87,20 @@ describe("DocumentConverter", () => {
   });
 
   test("enforces the injectable 30 second logical timeout", async () => {
-    const timeoutAfter = vi.fn().mockRejectedValue(new ConversionError("conversion_timeout", true));
-    await expect(new DocumentConverter({ toMarkdown: vi.fn(() => new Promise(() => {})) }, { timeoutAfter }).convert(source("text"))).rejects.toMatchObject({ code: "conversion_timeout", retryable: true });
-    expect(timeoutAfter).toHaveBeenCalledWith(30_000);
+    const cancel = vi.fn(), schedule = vi.fn((_ms: number, reject: (error: ConversionError) => void) => { reject(new ConversionError("conversion_timeout", true)); return cancel; });
+    await expect(new DocumentConverter({ toMarkdown: vi.fn(() => new Promise(() => {})) }, { schedule }).convert(source("text"))).rejects.toMatchObject({ code: "conversion_timeout", retryable: true });
+    expect(schedule).toHaveBeenCalledWith(30_000, expect.any(Function)); expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(["resolve", "reject"])("cancels the timer once when provider %s settles", async (mode) => {
+    const cancel = vi.fn(), schedule = vi.fn(() => cancel), provider = mode === "resolve" ? vi.fn().mockResolvedValue(success("text")) : vi.fn().mockRejectedValue(new Error("bad"));
+    const promise = new DocumentConverter({ toMarkdown: provider }, { schedule }).convert(source("text"));
+    if (mode === "resolve") await promise; else await expect(promise).rejects.toMatchObject({ code: "conversion_failed" });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects invalid provider token count %s", async (tokens) => {
+    await expect(new DocumentConverter({ toMarkdown: vi.fn().mockResolvedValue({ ...success("text"), tokens }) }).convert(source("text"))).rejects.toMatchObject({ code: "conversion_failed", retryable: false });
   });
 
   test("rejects array and malformed fake results", async () => {

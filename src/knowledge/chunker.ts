@@ -1,7 +1,7 @@
 import type { ConvertedDocument } from "./converter";
 
-export type KnowledgeChunkDraft = { id: string; documentId: string; indexVersion: number; text: string; pageNumber: number | null; paragraphIndex: number; sectionPath: string | null; contentHash: string };
-type Unit = { text: string; paragraphIndex: number };
+export type KnowledgeChunkDraft = { id: string; documentId: string; indexVersion: number; text: string; pageNumber: number | null; paragraphIndex: number; segmentIndex: number; sectionPath: string | null; contentHash: string };
+type Unit = { text: string; paragraphIndex: number; segmentIndex: number; sectionPath: string | null };
 
 /** CJK code points cost one token; each contiguous non-CJK run costs ceil(code points / 4). */
 export function estimateTokens(text: string): number {
@@ -14,14 +14,15 @@ export function estimateTokens(text: string): number {
 }
 
 export function chunkDocument(document: ConvertedDocument): KnowledgeChunkDraft[] {
-  const drafts: KnowledgeChunkDraft[] = [];
+  const drafts: KnowledgeChunkDraft[] = []; let currentSection: string | null = null;
   for (const page of document.pages) {
-    const units = paragraphUnits(page.markdown).flatMap(splitOversizedUnit);
+    const parsed = paragraphUnits(page.markdown, currentSection); currentSection = parsed.finalSection;
+    const units = parsed.units.flatMap(splitOversizedUnit);
     let current: Unit[] = [];
     for (const unit of units) {
-      if (current.length && estimateTokens(joinUnits([...current, unit])) > 800) {
+      if (current.length && (current[0]!.sectionPath !== unit.sectionPath || estimateTokens(joinUnits([...current, unit])) > 800)) {
         drafts.push(makeDraft(document, page.pageNumber, current));
-        current = overlapUnits(current);
+        current = current[0]!.sectionPath === unit.sectionPath ? overlapUnits(current) : [];
       }
       if (current.length && estimateTokens(joinUnits([...current, unit])) > 800) current = [];
       current.push(unit);
@@ -31,15 +32,15 @@ export function chunkDocument(document: ConvertedDocument): KnowledgeChunkDraft[
   return drafts;
 }
 
-function paragraphUnits(markdown: string): Unit[] {
-  const units: Unit[] = []; let start = 0, paragraphIndex = 0;
+function paragraphUnits(markdown: string, initialSection: string | null): { units: Unit[]; finalSection: string | null } {
+  const units: Unit[] = []; let start = 0, paragraphIndex = 0, sectionPath = initialSection;
   for (const match of markdown.matchAll(/\n{2,}/g)) {
     const end = match.index! + match[0].length;
-    if (end > start) units.push({ text: markdown.slice(start, end), paragraphIndex: paragraphIndex++ });
+    if (end > start) { const text = markdown.slice(start, end), heading = headingPath(text); if (heading !== null) sectionPath = heading; units.push({ text, paragraphIndex: paragraphIndex++, segmentIndex: 0, sectionPath }); }
     start = end;
   }
-  if (start < markdown.length) units.push({ text: markdown.slice(start), paragraphIndex });
-  return units.filter((unit) => unit.text.length > 0);
+  if (start < markdown.length) { const text = markdown.slice(start), heading = headingPath(text); if (heading !== null) sectionPath = heading; units.push({ text, paragraphIndex, segmentIndex: 0, sectionPath }); }
+  return { units: units.filter((unit) => unit.text.length > 0), finalSection: sectionPath };
 }
 
 function splitOversizedUnit(unit: Unit): Unit[] {
@@ -50,10 +51,10 @@ function splitOversizedUnit(unit: Unit): Unit[] {
     while (low <= high) { const middle = Math.floor((low + high) / 2); if (estimateTokens(points.slice(0, middle).join("")) <= 800) { best = middle; low = middle + 1; } else high = middle - 1; }
     const prefix = points.slice(0, best).join(""), sentence = Math.max(prefix.lastIndexOf("。") + 1, prefix.lastIndexOf(".") + 1, prefix.lastIndexOf("!") + 1, prefix.lastIndexOf("?") + 1), whitespace = Math.max(prefix.lastIndexOf(" ") + 1, prefix.lastIndexOf("\n") + 1);
     const cut = sentence > 0 ? sentence : whitespace > 0 ? whitespace : prefix.length;
-    parts.push({ text: remaining.slice(0, cut), paragraphIndex: unit.paragraphIndex });
+    parts.push({ ...unit, text: remaining.slice(0, cut), segmentIndex: parts.length });
     remaining = remaining.slice(cut);
   }
-  if (remaining) parts.push({ text: remaining, paragraphIndex: unit.paragraphIndex });
+  if (remaining) parts.push({ ...unit, text: remaining, segmentIndex: parts.length });
   return parts;
 }
 
@@ -69,10 +70,11 @@ function overlapUnits(units: Unit[]): Unit[] {
 
 function joinUnits(units: Unit[]): string { return units.map((unit) => unit.text).join(""); }
 function makeDraft(document: ConvertedDocument, pageNumber: number | null, units: Unit[]): KnowledgeChunkDraft {
-  const text = joinUnits(units), paragraphIndex = units[0]!.paragraphIndex;
-  return { id: sha256Hex([document.documentId, String(document.indexVersion), pageNumber === null ? "" : String(pageNumber), String(paragraphIndex), text].join("\0")), documentId: document.documentId, indexVersion: document.indexVersion, text, pageNumber, paragraphIndex, sectionPath: sectionPath(units), contentHash: sha256Hex(text) };
+  const text = joinUnits(units), normalizedText = normalizeChunkText(text), paragraphIndex = units[0]!.paragraphIndex, segmentIndex = units[0]!.segmentIndex;
+  return { id: sha256Hex([document.documentId, String(document.indexVersion), pageNumber === null ? "" : String(pageNumber), String(paragraphIndex), String(segmentIndex), normalizedText].join("\0")), documentId: document.documentId, indexVersion: document.indexVersion, text, pageNumber, paragraphIndex, segmentIndex, sectionPath: units[0]!.sectionPath, contentHash: sha256Hex(normalizedText) };
 }
-function sectionPath(units: Unit[]): string | null { const heading = units.find((unit) => /^#{1,6}\s+/.test(unit.text)); return heading ? heading.text.replace(/^#{1,6}\s+/, "").split("\n", 1)[0] ?? null : null; }
+function headingPath(text: string): string | null { const match = /^#{1,6}\s+(.+?)(?:\n|$)/u.exec(text); return match?.[1]?.trim() || null; }
+export function normalizeChunkText(text: string): string { const lines=text.replace(/\r\n?/g,"\n").split("\n").map((line)=>line.replace(/[ \t]+$/g,""));while(lines.length&&!lines[lines.length-1]!.trim())lines.pop();return lines.join("\n"); }
 function isCjk(point: number): boolean { return (point >= 0x3400 && point <= 0x9fff) || (point >= 0xf900 && point <= 0xfaff) || (point >= 0x20000 && point <= 0x3134f); }
 
 export function sha256Hex(input: string): string {

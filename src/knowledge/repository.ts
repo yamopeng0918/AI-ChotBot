@@ -1,4 +1,5 @@
 import type { IngestionJob, IngestionOperation, KnowledgeChunk, KnowledgeDocument } from "./types";
+import type { AuthorizedKnowledgeChunk } from "../retrieval/retriever";
 
 type DocumentRow = {
   id: string; source_type: KnowledgeDocument["sourceType"]; display_name: string;
@@ -63,6 +64,20 @@ export class KnowledgeRepository {
       `SELECT ${documentColumns} FROM knowledge_documents WHERE id = ?`,
     ).bind(id).first<DocumentRow>();
     return row ? mapDocument(row) : null;
+  }
+
+  async authorizeVectorIds(ids: string[]): Promise<AuthorizedKnowledgeChunk[]> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (!unique.length) return [];
+    const placeholders = unique.map(() => "?").join(",");
+    const result = await this.db.prepare(`SELECT c.vector_id vectorId,c.id chunkId,c.document_id documentId,c.text,
+      d.display_name displayName,d.source_url sourceUrl,c.page_number pageNumber,c.section_path sectionPath,
+      c.paragraph_index paragraphIndex,c.segment_index segmentIndex FROM knowledge_chunks c
+      JOIN knowledge_documents d ON d.id=c.document_id AND d.status='ready' AND d.active_version=c.index_version
+      WHERE c.vector_id IN (${placeholders}) ORDER BY c.vector_id,c.document_id,c.index_version,c.id`).bind(...unique).all<AuthorizedKnowledgeChunk>();
+    const counts = new Map<string, number>();
+    for (const row of result.results) counts.set(row.vectorId, (counts.get(row.vectorId) ?? 0) + 1);
+    return result.results.filter((row) => counts.get(row.vectorId) === 1);
   }
 
   async createPendingDocument(input: CreatePendingDocumentInput): Promise<KnowledgeDocument> {

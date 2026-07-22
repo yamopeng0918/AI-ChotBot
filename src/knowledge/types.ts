@@ -55,6 +55,7 @@ export type KnowledgeEvidence = {
   pageNumber: number | null;
   sectionPath: string | null;
   paragraphIndex: number | null;
+  segmentIndex?: number | null;
   retrievedAt: string;
   score: number;
 };

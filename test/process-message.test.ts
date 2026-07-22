@@ -14,6 +14,40 @@ describe("processQuestion", () => {
   it("does not call LINE when a stale worker loses its fenced prepare", async () => { const d = deps(); d.questions.prepare.mockRejectedValue(new Error("stale claim")); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 1 }); expect(d.lineClient.reply).not.toHaveBeenCalled(); expect(d.questions.release).toHaveBeenCalledWith("event-1", "lease-a"); });
   it("records reply_failed and retries with the same token/text without regenerating", async () => { const d = deps(); d.lineClient.reply.mockRejectedValueOnce(new LineReplyError(503)).mockResolvedValueOnce(undefined); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 1 }); expect(d.questions.complete).toHaveBeenCalledWith(expect.objectContaining({ status: "reply_failed", answer: "Try the riverside." }), "lease-a"); d.questions.claim.mockResolvedValueOnce({ ...claimed, leaseToken: "lease-b", prepared: { text: "Try the riverside.", model: "model", status: "answered" } }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" }); expect(d.answerService.answer).toHaveBeenCalledOnce(); expect(d.lineClient.reply).toHaveBeenNthCalledWith(2, job.replyToken, "Try the riverside."); });
   it("reuses the stable replyToken and prepared text after LINE success but completion failure", async () => { const d = deps(); d.questions.complete.mockRejectedValueOnce(new Error("db failed")).mockResolvedValueOnce(undefined); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 1 }); d.questions.claim.mockResolvedValueOnce({ ...claimed, leaseToken: "lease-b", prepared: { text: "Try the riverside.", model: "model", status: "answered" } }); d.lineClient.reply.mockRejectedValueOnce(new LineReplyError(400)); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 1 }); expect(d.answerService.answer).toHaveBeenCalledOnce(); expect(d.lineClient.reply).toHaveBeenNthCalledWith(1, job.replyToken, "Try the riverside."); expect(d.lineClient.reply).toHaveBeenNthCalledWith(2, job.replyToken, "Try the riverside."); });
+
+  it("retrieves, routes, searches, then grounds before preparing", async () => {
+    const d = deps(); const kb = { id: "kb", sourceType: "knowledge", title: "Guide", url: null, text: "Run at six.", pageNumber: 1, sectionPath: null, paragraphIndex: null, retrievedAt: "now", score: .9 } as const;
+    const web = { ...kb, id: "web:1", sourceType: "web", url: "https://example.com" } as const;
+    const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [kb], insufficient: false, topScore: .9 }) };
+    const webSearch = { search: vi.fn().mockResolvedValue([web]) }; const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "Grounded", model: "grounded-model", citations: [], usedEvidenceIds: ["kb"] }) };
+    await processQuestion({ ...job, text: "search online for run time" }, { ...d, retriever, webSearch, groundedAnswerService });
+    expect(retriever.retrieve).toHaveBeenCalledWith("search online for run time", 8); expect(webSearch.search).toHaveBeenCalledWith("search online for run time");
+    expect(groundedAnswerService.answer).toHaveBeenCalledWith({ question: "search online for run time", evidence: [kb, web], webUnavailable: false });
+    expect(retriever.retrieve.mock.invocationCallOrder[0]!).toBeLessThan(webSearch.search.mock.invocationCallOrder[0]!);
+    expect(webSearch.search.mock.invocationCallOrder[0]!).toBeLessThan(groundedAnswerService.answer.mock.invocationCallOrder[0]!);
+    expect(d.questions.prepare).toHaveBeenCalledWith(expect.objectContaining({ answer: "Grounded", model: "grounded-model" }), "answered", "lease-a");
+  });
+
+  it("degrades web failure to KB evidence and marks web unavailable", async () => {
+    const d = deps(); const kb = { id: "kb", sourceType: "knowledge", title: "Guide", url: null, text: "Run at six.", pageNumber: 1, sectionPath: null, paragraphIndex: null, retrievedAt: "now", score: .9 } as const;
+    const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "KB answer", model: "m", citations: [], usedEvidenceIds: ["kb"] }) };
+    await processQuestion({ ...job, text: "search online for run time" }, { ...d, retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [kb], insufficient: false, topScore: .9 }) }, webSearch: { search: vi.fn().mockRejectedValue(new Error("down")) }, groundedAnswerService });
+    expect(groundedAnswerService.answer).toHaveBeenCalledWith(expect.objectContaining({ evidence: [kb], webUnavailable: true }));
+  });
+
+  it("returns insufficient evidence for factual questions but permits clearly casual conversation", async () => {
+    const factual = deps(), casual = deps(); const empty = { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) }; const webDown = { search: vi.fn().mockRejectedValue(new Error("down")) };
+    await processQuestion({ ...job, text: "What time does the race start?" }, { ...factual, retriever: empty, webSearch: webDown, groundedAnswerService: { answer: vi.fn() } });
+    expect(factual.answerService.answer).not.toHaveBeenCalled(); expect(factual.lineClient.reply).toHaveBeenCalledWith(job.replyToken, expect.stringContaining("enough reliable evidence"));
+    await processQuestion({ ...job, text: "hello!" }, { ...casual, retriever: empty, webSearch: webDown, groundedAnswerService: { answer: vi.fn() } });
+    expect(casual.answerService.answer).toHaveBeenCalledOnce();
+  });
+
+  it("prepared duplicate bypasses retrieval, web search, and grounded generation", async () => {
+    const d = deps({ ...claimed, prepared: { text: "saved", model: "saved-model", status: "answered" } }); const retriever = { retrieve: vi.fn() }, webSearch = { search: vi.fn() }, groundedAnswerService = { answer: vi.fn() };
+    await processQuestion(job, { ...d, retriever, webSearch, groundedAnswerService });
+    expect(retriever.retrieve).not.toHaveBeenCalled(); expect(webSearch.search).not.toHaveBeenCalled(); expect(groundedAnswerService.answer).not.toHaveBeenCalled();
+  });
 });
 
 describe("queue consumer", () => {

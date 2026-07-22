@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 
 import { OpenRouterAnswerService } from "./answers/openrouter";
+import { GroundedAnswerService, OpenRouterGroundedGenerator } from "./answers/grounded";
 import type { Env } from "./config";
 import { processQuestion } from "./jobs/process-message";
 import type { QuestionJob } from "./jobs/types";
@@ -20,10 +21,14 @@ import { EmbeddingService } from "./knowledge/embeddings";
 import { processIngestionJob, type IngestionDependencies } from "./knowledge/ingestion";
 import { KnowledgeVectorStore } from "./knowledge/vector-store";
 import type { IngestionJobMessage } from "./knowledge/types";
+import { KnowledgeRetriever } from "./retrieval/retriever";
+import { TavilySearchService, type WebSearchService } from "./search/tavily";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
 type KnowledgeFactory = (env: Env) => KnowledgeAdminRepository;
+type RetrieverDependency = Pick<KnowledgeRetriever, "retrieve">;
+type GroundedDependency = Pick<GroundedAnswerService, "answer">;
 
 type WorkerDependencies = {
   fetcher?: typeof fetch;
@@ -36,6 +41,9 @@ type WorkerDependencies = {
   validateFile?: (file: File) => Promise<ValidatedKnowledgeFile>;
   safeUrlFetcher?: SafeUrlFetcher | ((env: Env) => SafeUrlFetcher);
   ingestion?: IngestionDependencies | ((env: Env) => IngestionDependencies);
+  retriever?: RetrieverDependency | ((env: Env) => RetrieverDependency);
+  webSearch?: WebSearchService | ((env: Env) => WebSearchService);
+  groundedAnswerService?: GroundedDependency | ((env: Env) => GroundedDependency);
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -105,8 +113,23 @@ return {
   },
   async queue(batch: MessageBatch<QuestionJob | IngestionJobMessage>, env: Env, _context: ExecutionContext) {
     const fetcher = overrides.fetcher ?? env.FETCHER ?? fetch;
+    const injectedKnowledgeAnswering = overrides.retriever && overrides.webSearch && overrides.groundedAnswerService ? {
+      retriever: typeof overrides.retriever === "function" ? overrides.retriever(env) : overrides.retriever,
+      webSearch: typeof overrides.webSearch === "function" ? overrides.webSearch(env) : overrides.webSearch,
+      groundedAnswerService: typeof overrides.groundedAnswerService === "function" ? overrides.groundedAnswerService(env) : overrides.groundedAnswerService,
+    } : null;
+    const knowledgeAnswering = injectedKnowledgeAnswering ?? (env.AI && env.VECTORIZE && env.TAVILY_API_KEY ? (() => {
+      const retrievalRepository = new KnowledgeRepository(env.DB);
+      const groundedGenerator = new OpenRouterGroundedGenerator(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL);
+      return {
+        retriever: new KnowledgeRetriever(new EmbeddingService(env.AI), new KnowledgeVectorStore(env.VECTORIZE), retrievalRepository, { now: () => (overrides.now?.() ?? new Date()).toISOString() }),
+        webSearch: new TavilySearchService(fetcher, env.TAVILY_API_KEY, () => (overrides.now?.() ?? new Date()).toISOString()),
+        groundedAnswerService: new GroundedAnswerService((messages) => groundedGenerator.generate(messages)),
+      };
+    })() : {});
     const dependencies = {
       answerService: new OpenRouterAnswerService(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
+      ...knowledgeAnswering,
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
       questions: questionsFor(env),
       pseudonymize: (userId: string | null) => pseudonymizeUserId(userId, env.ANALYTICS_HASH_KEY),

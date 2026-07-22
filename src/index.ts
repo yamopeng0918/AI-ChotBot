@@ -161,7 +161,7 @@ function isIngestionJob(value: unknown): value is IngestionJobMessage {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>;
   return typeof item.jobId === "string" && typeof item.documentId === "string"
-    && (item.kind === "ingest" || item.kind === "reindex");
+    && (item.kind === "ingest" || item.kind === "reindex" || item.kind === "delete");
 }
 function isQuestionJob(value: unknown): value is QuestionJob {
   if (!value || typeof value !== "object") return false;

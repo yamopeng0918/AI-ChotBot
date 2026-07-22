@@ -13,7 +13,9 @@ function setup() {
   const order: string[] = [];
   const repository = {
     claimJob: vi.fn(async () => { order.push("claim"); return { disposition: "acquired", leaseToken: "lease", leaseUntil: "later", attemptCount: 1 }; }),
-    getDocument: vi.fn(async () => ({ id: "doc", r2Key: "source.pdf", displayName: "source.pdf", sourceType: "file" })),
+    getDocument: vi.fn(async () => ({ id: "doc", r2Key: "source.pdf", displayName: "source.pdf", sourceType: "file", activeVersion: 1, status: "deleting" })),
+    getJob: vi.fn(async () => ({ id: "job", documentId: "doc", operation: "delete", status: "processing", attemptCount: 1, leaseToken: "lease", leaseUntil: "later", errorCode: null, createdAt: "2026-07-21T00:00:00.000Z", updatedAt: "2026-07-21T00:00:00.000Z", indexVersion: 1 })),
+    listVectorIds: vi.fn(async () => ["a".repeat(64)]),
     beginVersion: vi.fn(async () => { order.push("begin"); return 1; }),
     renewJob: vi.fn(async () => { order.push("renew"); return "later"; }),
     stageChunks: vi.fn(async () => { order.push("stage"); }),
@@ -27,8 +29,9 @@ function setup() {
     publishVersion: vi.fn(async () => { order.push("publish"); }),
     releaseJob: vi.fn(async () => { order.push("release"); }),
     failJob: vi.fn(async () => { order.push("fail"); }),
+    completeDeletion: vi.fn(async () => { order.push("delete-complete"); }),
   };
-  const objectStore = { getOriginal: vi.fn(async () => { order.push("r2"); return { blob: async () => new Blob(["source"], { type: "application/pdf" }) }; }) };
+  const objectStore = { getOriginal: vi.fn(async () => { order.push("r2"); return { blob: async () => new Blob(["source"], { type: "application/pdf" }) }; }), deleteOriginal: vi.fn(async () => { order.push("delete-r2"); }) };
   const converter = { convert: vi.fn(async () => { order.push("convert"); return { documentId: "doc", indexVersion: 1, kind: "pdf", name: "source.pdf", tokens: 1, pages: [] }; }) };
   const chunk = vi.fn(() => { order.push("chunk"); return [draft]; });
   const embeddings = { embed: vi.fn(async () => { order.push("embed"); return [Array(1024).fill(0)]; }) };
@@ -140,11 +143,14 @@ describe("worker queue dispatch", () => {
     expect(unknown.retry).toHaveBeenCalledWith({ delaySeconds: 1 }); expect(unknown.ack).not.toHaveBeenCalled();
   });
 
-  test("retries delete messages for their owning lifecycle task without rebuilding", async () => {
+  test("dispatches delete messages to the lifecycle task without rebuilding", async () => {
     const ingestion = setup(); const worker = createWorker({ ingestion: ingestion as never });
     const message = { body: { jobId: "job", documentId: "doc", kind: "delete" }, ack: vi.fn(), retry: vi.fn() };
     await worker.queue({ messages: [message] } as never, {} as never, {} as never);
-    expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 1 });
-    expect(ingestion.repository.claimJob).not.toHaveBeenCalled();
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+    expect(ingestion.repository.claimJob).toHaveBeenCalledOnce();
+    expect(ingestion.repository.beginVersion).not.toHaveBeenCalled();
+    expect(ingestion.repository.publishVersion).not.toHaveBeenCalled();
   });
 });

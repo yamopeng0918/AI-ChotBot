@@ -1,7 +1,7 @@
 import { chunkDocument, type KnowledgeChunkDraft } from "./chunker";
 import { ConversionError, type ConversionKind, type DocumentConverter } from "./converter";
 import { EmbeddingError, type EmbeddingService } from "./embeddings";
-import { StaleIngestionClaimError, type ClaimJobResult } from "./repository";
+import { StaleIngestionClaimError, type ClaimJobResult, type IngestionJobDetails } from "./repository";
 import type { IngestionJobMessage, KnowledgeChunk, KnowledgeDocument } from "./types";
 import { vectorIdFor, type KnowledgeVectorStore } from "./vector-store";
 
@@ -11,8 +11,10 @@ type IngestionRepository = {
   authorizeGenerationCleanup(jobId: string, token: string, indexVersion: number, vectorIds: string[], errorCode: string, finalStatus: "pending" | "failed", now: string): Promise<{ disposition: "authorized" | "published" | "stale" }>;
   completeGenerationCleanup(jobId: string, cleanupToken: string, now: string): Promise<void>;
   releaseGenerationCleanup(jobId: string, cleanupToken: string, now: string): Promise<void>;
+  getJob(jobId: string): Promise<IngestionJobDetails | null>;
   claimJob(jobId: string, leaseSeconds: number, now: string): Promise<ClaimJobResult>;
   getDocument(id: string): Promise<KnowledgeDocument | null>;
+  listVectorIds(documentId: string, indexVersion?: number): Promise<string[]>;
   beginVersion(jobId: string, token: string, now: string): Promise<number>;
   renewJob(jobId: string, token: string, now: string): Promise<string>;
   stageChunks(jobId: string, token: string, chunks: KnowledgeChunk[], now: string): Promise<void>;
@@ -21,8 +23,9 @@ type IngestionRepository = {
   publishVersion(jobId: string, token: string, expectedCount: number, now: string): Promise<void>;
   releaseJob(jobId: string, errorCode: string, token: string, now: string): Promise<void>;
   failJob(jobId: string, errorCode: string, failureKind: "retryable" | "permanent", token: string, now: string): Promise<void>;
+  completeDeletion(jobId: string, token: string, indexVersion: number | null, now: string): Promise<void>;
 };
-type SourceStore = { getOriginal(key: string): Promise<{ blob(): Promise<Blob> } | null> };
+type SourceStore = { getOriginal(key: string): Promise<{ blob(): Promise<Blob> } | null>; deleteOriginal(key: string): Promise<void> };
 
 export type IngestionDependencies = {
   repository: IngestionRepository; objectStore: SourceStore; converter: Pick<DocumentConverter, "convert">;
@@ -50,6 +53,24 @@ export async function processIngestionJob(message: IngestionJobMessage, dependen
   if (claim.disposition !== "acquired") return { disposition: "ack" };
   const token = claim.leaseToken; let vectorIds: string[] = []; let generationArmed = false; let staged = false; let indexVersion: number | null = null;
   try {
+    if (message.kind === "delete") {
+      const job = await dependencies.repository.getJob(message.jobId);
+      const document = await dependencies.repository.getDocument(message.documentId);
+      if (!job || !document) return { disposition: "ack" };
+      if (job.indexVersion !== null && document.activeVersion !== job.indexVersion) return { disposition: "ack" };
+      const deleteIds = await dependencies.repository.listVectorIds(message.documentId);
+      try {
+        await dependencies.vectors.deleteIds(deleteIds);
+        if (document.r2Key) await dependencies.objectStore.deleteOriginal(document.r2Key);
+        await dependencies.repository.completeDeletion(message.jobId, token, job.indexVersion, now());
+        return { disposition: "ack" };
+      } catch (error) {
+        if (error instanceof StaleIngestionClaimError) return { disposition: "ack" };
+        try { await dependencies.repository.releaseJob(message.jobId, "delete_retryable", token, now()); }
+        catch (releaseError) { if (releaseError instanceof StaleIngestionClaimError) return { disposition: "ack" }; throw releaseError; }
+        return { disposition: "retry", delaySeconds: retryDelay(claim.attemptCount) };
+      }
+    }
     const document = await dependencies.repository.getDocument(message.documentId);
     if (!document || !document.r2Key) throw new PermanentIngestionError("source_not_found");
     const source = await dependencies.objectStore.getOriginal(document.r2Key);

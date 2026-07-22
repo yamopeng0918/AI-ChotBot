@@ -122,12 +122,12 @@ describe("knowledge admin metadata API", () => {
   test.each([
     ["POST", "/admin/knowledge/documents/doc/reindex"],
     ["DELETE", "/admin/knowledge/documents/doc"],
-  ])("leaves unregistered %s %s as 404 without authorization", async (method, path) => {
+  ])("rejects unauthenticated %s %s with the shared admin guard", async (method, path) => {
     const worker = createWorker();
     const response = await worker.fetch(
       new Request(`https://worker.test${path}`, { method }), env, {} as ExecutionContext,
     );
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
   });
 
   async function request(path: string, method = "GET"): Promise<Response> {

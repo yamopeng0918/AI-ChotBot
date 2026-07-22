@@ -7,6 +7,14 @@ type DocumentRow = {
   content_hash: string | null; page_count: number | null; error_code: string | null;
   status: KnowledgeDocument["status"]; created_at: string; updated_at: string;
 };
+type JobRow = {
+  id: string; document_id: string; operation: IngestionJob["operation"]; status: IngestionJob["status"];
+  attempt_count: number; lease_token: string | null; lease_until: string | null;
+  error_code: string | null; failure_kind: string | null; created_at: string; updated_at: string;
+  index_version: number | null;
+};
+
+export type IngestionJobDetails = IngestionJob & { indexVersion: number | null };
 
 export type CreatePendingDocumentInput = {
   id: string;
@@ -23,6 +31,7 @@ export type CreateJobInput = {
   documentId: string;
   operation: IngestionOperation;
   createdAt: string;
+  indexVersion?: number | null;
 };
 
 export type ClaimJobResult =
@@ -48,6 +57,8 @@ export class StaleIngestionClaimError extends Error {
 
 const documentColumns = `id, source_type, display_name, source_url, r2_key, active_version,
   content_hash, page_count, error_code, status, created_at, updated_at`;
+const jobColumns = `id, document_id, operation, status, attempt_count, lease_token, lease_until,
+  error_code, failure_kind, created_at, updated_at, index_version`;
 
 export class KnowledgeRepository {
   constructor(private readonly db: D1Database, private readonly claimToken = () => crypto.randomUUID()) {}
@@ -91,16 +102,44 @@ export class KnowledgeRepository {
   }
 
   async createJob(input: CreateJobInput): Promise<IngestionJob> {
-    await this.db.prepare(`INSERT INTO ingestion_jobs
-      (id, document_id, operation, status, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', ?, ?)`).bind(
-      input.id, input.documentId, input.operation, input.createdAt, input.createdAt,
-    ).run();
+    if (await this.hasColumn("ingestion_jobs", "index_version")) {
+      await this.db.prepare(`INSERT INTO ingestion_jobs
+        (id, document_id, operation, status, created_at, updated_at, index_version)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?)`).bind(
+        input.id, input.documentId, input.operation, input.createdAt, input.createdAt, input.indexVersion ?? null,
+      ).run();
+    } else {
+      await this.db.prepare(`INSERT INTO ingestion_jobs
+        (id, document_id, operation, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'pending', ?, ?)`).bind(
+        input.id, input.documentId, input.operation, input.createdAt, input.createdAt,
+      ).run();
+    }
     return {
       id: input.id, documentId: input.documentId, operation: input.operation, status: "pending",
       attemptCount: 0, leaseToken: null, leaseUntil: null, errorCode: null,
       createdAt: input.createdAt, updatedAt: input.createdAt,
     };
+  }
+
+  async getJob(id: string): Promise<IngestionJobDetails | null> {
+    const row = await this.db.prepare(`SELECT ${jobColumns} FROM ingestion_jobs WHERE id=?`).bind(id).first<JobRow>();
+    return row ? mapJob(row) : null;
+  }
+
+  async findLiveJob(documentId: string): Promise<IngestionJobDetails | null> {
+    const row = await this.db.prepare(`SELECT ${jobColumns} FROM ingestion_jobs
+      WHERE document_id=? AND status IN ('pending','processing') ORDER BY created_at DESC, id DESC LIMIT 1`).bind(documentId)
+      .first<JobRow>();
+    return row ? mapJob(row) : null;
+  }
+
+  async findLatestJob(documentId: string, operation?: IngestionOperation): Promise<IngestionJobDetails | null> {
+    const statement = operation === undefined
+      ? this.db.prepare(`SELECT ${jobColumns} FROM ingestion_jobs WHERE document_id=? ORDER BY created_at DESC, id DESC LIMIT 1`).bind(documentId)
+      : this.db.prepare(`SELECT ${jobColumns} FROM ingestion_jobs WHERE document_id=? AND operation=? ORDER BY created_at DESC, id DESC LIMIT 1`).bind(documentId, operation);
+    const row = await statement.first<JobRow>();
+    return row ? mapJob(row) : null;
   }
 
   async claimJob(jobId: string, leaseSeconds: number, now = new Date().toISOString()): Promise<ClaimJobResult> {
@@ -331,6 +370,26 @@ export class KnowledgeRepository {
     this.assertLiveMutation(result.meta.changes);
   }
 
+  async completeDeletion(jobId: string, token: string, indexVersion: number | null, now: string): Promise<void> {
+    now = normalizeNow(now);
+    const state = await this.db.prepare(`SELECT j.document_id,j.status,j.lease_token,j.lease_until,d.active_version
+      FROM ingestion_jobs j JOIN knowledge_documents d ON d.id=j.document_id WHERE j.id=?`)
+      .bind(jobId).first<{ document_id: string; status: IngestionJob["status"]; lease_token: string | null; lease_until: string | null; active_version: number | null }>();
+    if (!state || state.status !== "processing" || state.lease_token !== token || state.lease_until! <= now) throw new StaleIngestionClaimError();
+    if (indexVersion !== null && state.active_version !== indexVersion) throw new StaleIngestionClaimError();
+    const results = await this.db.batch([
+      this.db.prepare(`DELETE FROM knowledge_chunks WHERE document_id=?`).bind(state.document_id),
+      this.db.prepare(`UPDATE knowledge_documents SET active_version=NULL, content_hash=NULL, page_count=NULL,
+        error_code=NULL, updated_at=? WHERE id=? AND status='deleting' AND (? IS NULL OR active_version=?)`)
+        .bind(now, state.document_id, indexVersion, indexVersion),
+      this.db.prepare(`UPDATE ingestion_jobs SET status='completed',lease_token=NULL,lease_until=NULL,
+        error_code=NULL,failure_kind=NULL,updated_at=? WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`)
+        .bind(now, jobId, token, now),
+    ]);
+    this.assertLiveMutation(results[2]!.meta.changes);
+    this.assertLiveMutation(results[1]!.meta.changes);
+  }
+
   private assertLiveMutation(changes: number): void {
     if (changes !== 1) throw new StaleIngestionClaimError();
   }
@@ -339,6 +398,11 @@ export class KnowledgeRepository {
     const result = await this.db.prepare(`UPDATE ingestion_jobs SET updated_at=updated_at
       WHERE id=? AND status='processing' AND lease_token=? AND lease_until>?`).bind(jobId, token, now).run();
     this.assertLiveMutation(result.meta.changes);
+  }
+
+  private async hasColumn(table: string, column: string): Promise<boolean> {
+    const result = await this.db.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+    return result.results.some((row) => row.name === column);
   }
 
   private readClaimState(jobId: string): Promise<ClaimState | null> {
@@ -423,7 +487,7 @@ export class KnowledgeRepository {
 
   async markDeleting(id: string): Promise<boolean> {
     const result = await this.db.prepare(
-      "UPDATE knowledge_documents SET status = 'deleting' WHERE id = ?",
+      "UPDATE knowledge_documents SET status = 'deleting', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
     ).bind(id).run();
     return result.meta.changes === 1;
   }
@@ -435,6 +499,22 @@ function mapDocument(row: DocumentRow): KnowledgeDocument {
     sourceUrl: row.source_url, r2Key: row.r2_key, activeVersion: row.active_version,
     contentHash: row.content_hash, pageCount: row.page_count, errorCode: row.error_code,
     status: row.status, createdAt: row.created_at, updatedAt: row.updated_at,
+  };
+}
+
+function mapJob(row: JobRow): IngestionJobDetails {
+  return {
+    id: row.id,
+    documentId: row.document_id,
+    operation: row.operation,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    leaseToken: row.lease_token,
+    leaseUntil: row.lease_until,
+    errorCode: row.error_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    indexVersion: row.index_version,
   };
 }
 

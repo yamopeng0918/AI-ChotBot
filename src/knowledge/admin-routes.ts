@@ -2,14 +2,14 @@ import type { Context, Hono, MiddlewareHandler } from "hono";
 
 import type { Env } from "../config";
 import { verifyAdminBearer } from "./admin-auth";
-import type { KnowledgeRepository } from "./repository";
+import type { IngestionJobDetails, KnowledgeRepository } from "./repository";
 import { KnowledgeFileError, validateKnowledgeFile, type ValidatedKnowledgeFile } from "./file-validation";
 import type { KnowledgeObjectStore } from "./storage";
 import type { IngestionJobMessage } from "./types";
 import { KnowledgeUrlError, normalizeKnowledgeUrl, type SafeUrlFetcher } from "./url-safety";
 
 export type KnowledgeReader = Pick<KnowledgeRepository, "listDocuments" | "getDocument">;
-export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "claimUpload" | "updateUploadClaim" | "abandonUploadClaim" | "completeUpload" | "failUpload" | "clearUploadClaim">;
+export type KnowledgeAdminRepository = KnowledgeReader & Pick<KnowledgeRepository, "claimUpload" | "updateUploadClaim" | "abandonUploadClaim" | "completeUpload" | "failUpload" | "clearUploadClaim" | "createJob" | "findLiveJob" | "findLatestJob" | "markDeleting">;
 export type KnowledgeUploadDependencies = {
   repositoryFor: (env: Env) => KnowledgeAdminRepository;
   objectStoreFor: (env: Env) => KnowledgeObjectStore;
@@ -160,9 +160,53 @@ export function registerKnowledgeAdminRoutes(
       return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
     }
   });
+
+  app.post("/admin/knowledge/documents/:id/reindex", requireAdmin, async (context) => {
+    try {
+      const repository = repositoryFor(context.env);
+      const document = await repository.getDocument(context.req.param("id"));
+      if (!document) return context.json({ error: { code: "document_not_found", message: "Document not found" } }, 404);
+      if (document.status !== "ready") return conflict();
+      const live = await repository.findLiveJob(document.id);
+      if (live) return conflict();
+      const createdAt = (dependencies.now?.() ?? new Date()).toISOString();
+      const jobId = crypto.randomUUID();
+      await repository.createJob({ id: jobId, documentId: document.id, operation: "reindex", createdAt });
+      try { await dependencies.queueFor(context.env).send({ jobId, documentId: document.id, kind: "reindex" }); }
+      catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
+      return context.json({ jobId, status: "pending" }, 202);
+    } catch {
+      return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
+    }
+  });
+
+  app.delete("/admin/knowledge/documents/:id", requireAdmin, async (context) => {
+    try {
+      const repository = repositoryFor(context.env);
+      const document = await repository.getDocument(context.req.param("id"));
+      if (!document) return context.json({ error: { code: "document_not_found", message: "Document not found" } }, 404);
+      const live = await repository.findLiveJob(document.id);
+      if (live && live.operation !== "delete") return conflict();
+      if (live && live.operation === "delete") return context.json({ jobId: live.id, status: live.status === "processing" ? "pending" : live.status }, 202);
+      if (document.status === "deleting") {
+        const latestDelete = await repository.findLatestJob(document.id, "delete");
+        if (latestDelete) return context.json({ jobId: latestDelete.id, status: latestDelete.status === "processing" ? "pending" : latestDelete.status }, 202);
+      }
+      const createdAt = (dependencies.now?.() ?? new Date()).toISOString();
+      const jobId = crypto.randomUUID();
+      await repository.markDeleting(document.id);
+      await repository.createJob({ id: jobId, documentId: document.id, operation: "delete", createdAt, indexVersion: document.activeVersion });
+      try { await dependencies.queueFor(context.env).send({ jobId, documentId: document.id, kind: "delete" }); }
+      catch { return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503); }
+      return context.json({ jobId, status: "pending" }, 202);
+    } catch {
+      return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
+    }
+  });
 }
 
 function invalidRequest(context: Context) { return context.json({ error: { code: "invalid_request", message: "Invalid request" } }, 400); }
+function conflict() { return new Response(JSON.stringify({ error: { code: "conflict", message: "Conflict" } }), { status: 409, headers: { "content-type": "application/json" } }); }
 
 async function stableUuid(namespace: string, key: string): Promise<string> {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(namespace + key))).slice(0, 16);

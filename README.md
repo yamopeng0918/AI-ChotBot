@@ -6,12 +6,20 @@ A Cloudflare Worker that accepts signed LINE group webhooks, queues eligible men
 
 - Node.js 20 or newer, npm, a Cloudflare account, a LINE Official Account/Messaging API channel, and an OpenRouter key.
 - Follow [the LINE console runbook](docs/setup/line-messaging-api.md) before the production smoke check.
+- For knowledge-search operations, use [the knowledge-search runbook](docs/setup/knowledge-search.md) and the dedicated scripts below.
 
 ```powershell
 npm install
 npm test
 npm run typecheck
 npm run deploy -- --dry-run
+```
+
+Knowledge-search checks:
+
+```powershell
+npm run test:e2e:knowledge
+npm run test:quality:knowledge
 ```
 
 ## Provision Cloudflare
@@ -68,6 +76,8 @@ npm run deploy -- --dry-run
 npx wrangler d1 migrations apply line-bot-diagnostics --remote
 npm run deploy
 ```
+
+For knowledge-search provisioning, smoke tests, DLQ handling, rollback, and monitoring commands, see [docs/setup/knowledge-search.md](docs/setup/knowledge-search.md).
 
 Record the deployment ID printed by Wrangler. With real credentials only, perform this production smoke test:
 

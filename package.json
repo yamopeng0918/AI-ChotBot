@@ -6,6 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "test:e2e": "vitest run test/e2e/webhook-to-reply.test.ts",
+    "test:quality:knowledge": "vitest run test/quality/knowledge-evaluation.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "dev": "wrangler dev",

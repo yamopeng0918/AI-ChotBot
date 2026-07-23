@@ -3,7 +3,7 @@
   "name": "line-running-community-bot",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-17",
-  "d1_databases": [{ "binding": "DB", "database_name": "line-bot-diagnostics", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "line-bot-diagnostics", "database_id": "37554743-813d-4817-8a6f-e315e2408b0a", "migrations_dir": "migrations" }],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "line-bot-knowledge-files" }],
   "vectorize": [{ "binding": "VECTORIZE", "index_name": "line-bot-knowledge-bge-m3-1024-cosine" }],
   "ai": { "binding": "AI" },

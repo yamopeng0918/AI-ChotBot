@@ -14,6 +14,10 @@ const LIST_FAMILY = "管理員列表";
 
 function parseTarget(rawTarget: string): GroupAdminSeed | null {
   if (rawTarget.startsWith("@")) {
+    if (!/^@\S+$/.test(rawTarget)) {
+      return null;
+    }
+
     return { userId: "", displayName: rawTarget };
   }
 
@@ -59,11 +63,39 @@ export function resolveAdminTarget(event: LineWebhookEvent, command: AdminComman
     return command.target;
   }
 
+  const messageText = event.message?.type === "text" ? event.message.text : undefined;
+  if (typeof messageText !== "string") {
+    return null;
+  }
+
+  const trimmedMessageText = messageText.trim();
+  if (trimmedMessageText !== command.rawText) {
+    return null;
+  }
+
+  const leadingWhitespaceLength = messageText.length - messageText.trimStart().length;
+  const targetToken = command.target.displayName;
+  const targetIndex = command.rawText.length - targetToken.length;
+  if (targetIndex < 0 || command.rawText.slice(targetIndex) !== targetToken) {
+    return null;
+  }
+
   const mentionees = event.message?.mention?.mentionees ?? [];
-  const targetMention = mentionees.find(
-    (mentionee) => mentionee.isSelf !== true && typeof mentionee.userId === "string",
+  const targetMentions = mentionees.filter(
+    (mentionee) =>
+      mentionee.isSelf !== true &&
+      typeof mentionee.userId === "string" &&
+      typeof mentionee.index === "number" &&
+      typeof mentionee.length === "number" &&
+      mentionee.index === leadingWhitespaceLength + targetIndex &&
+      mentionee.length === targetToken.length,
   );
 
+  if (targetMentions.length !== 1) {
+    return null;
+  }
+
+  const [targetMention] = targetMentions;
   if (!targetMention || typeof targetMention.userId !== "string") {
     return null;
   }

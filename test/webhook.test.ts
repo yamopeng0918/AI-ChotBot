@@ -3,6 +3,7 @@ import { Miniflare } from "miniflare";
 
 import worker, { createWorker } from "../src/index";
 import { parseAdminCommand } from "../src/admin/commands";
+import type { LineWebhookEvent } from "../src/line/types";
 import migrationSql from "../migrations/0002_group_admins.sql?raw";
 
 const encoder = new TextEncoder();
@@ -21,7 +22,7 @@ async function sign(body: string, secret: string): Promise<string> {
   return btoa(String.fromCharCode(...bytes));
 }
 
-function eligibleEvent() {
+function eligibleEvent(): LineWebhookEvent {
   return {
     type: "message",
     webhookEventId: "event-1",
@@ -147,7 +148,7 @@ describe("POST /webhooks/line queue publication", () => {
   it("never queues ineligible events", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const ineligible = eligibleEvent();
-    ineligible.source.groupId = "other-group";
+    ineligible.source!.groupId = "other-group";
 
     const response = await post(JSON.stringify({ events: [ineligible] }), send);
 
@@ -159,7 +160,7 @@ describe("POST /webhooks/line queue publication", () => {
   it("does not queue admin commands that mention the bot", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const adminCommand = eligibleEvent();
-    adminCommand.message.text = "@bot 管理員列表";
+    adminCommand.message!.text = "@bot 管理員列表";
 
     const response = await post(JSON.stringify({ events: [adminCommand] }), send);
 
@@ -171,20 +172,20 @@ describe("POST /webhooks/line queue publication", () => {
   it("queues malformed admin-like mention text through the normal mention path", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const malformedAdminLike = eligibleEvent();
-    malformedAdminLike.message.text = "@bot 管理員新增 @王小明 extra";
+    malformedAdminLike.message!.text = "@bot 管理員新增 @王小明 extra";
     const targetMention = "@王小明";
-    malformedAdminLike.message.mention = {
+    malformedAdminLike.message!.mention = {
       mentionees: [
         { type: "user", isSelf: true, index: 0, length: 4 },
         {
           type: "user",
           userId: "user-2",
-          index: malformedAdminLike.message.text.lastIndexOf(targetMention),
+          index: malformedAdminLike.message!.text.lastIndexOf(targetMention),
           length: targetMention.length,
         },
       ],
     };
-    expect(parseAdminCommand(malformedAdminLike.message.text)).not.toBeNull();
+    expect(parseAdminCommand(malformedAdminLike.message!.text)).not.toBeNull();
 
     const response = await post(JSON.stringify({ events: [malformedAdminLike] }), send);
 

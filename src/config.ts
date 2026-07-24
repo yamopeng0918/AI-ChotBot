@@ -8,6 +8,7 @@ export interface Env {
   OPENROUTER_API_KEY: string;
   OPENROUTER_MODEL: string;
   ANALYTICS_HASH_KEY: string;
+  GROUP_ADMINS_BOOTSTRAP_JSON: string;
   MESSAGE_QUEUE: Queue<QuestionJob>;
   DB: D1Database;
   FETCHER?: Fetcher;

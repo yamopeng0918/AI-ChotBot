@@ -69,6 +69,31 @@ describe("GroupAdminsRepository with real Miniflare D1", () => {
     expect(await repo.list("group-1")).toHaveLength(1);
   });
 
+  it("does not seed a group from bootstrap once any runtime row already exists", async () => {
+    const repo = new GroupAdminsRepository(db, () => "2026-07-24T00:00:00.000Z");
+
+    await repo.upsert("group-1", { userId: "U-runtime", displayName: "Runtime" }, "command");
+    await repo.ensureBootstrap(
+      "group-1",
+      [
+        { userId: "U1", displayName: "Alice" },
+        { userId: "U2", displayName: "Bob" },
+      ],
+      "env"
+    );
+
+    expect(await repo.list("group-1")).toEqual([
+      {
+        groupId: "group-1",
+        userId: "U-runtime",
+        displayName: "Runtime",
+        source: "command",
+        createdAt: "2026-07-24T00:00:00.000Z",
+        updatedAt: "2026-07-24T00:00:00.000Z",
+      },
+    ]);
+  });
+
   it("updates displayName and updatedAt for an existing admin", async () => {
     const repo = new GroupAdminsRepository(db, () => "2026-07-24T00:00:00.000Z");
 

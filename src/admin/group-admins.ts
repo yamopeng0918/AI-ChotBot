@@ -45,12 +45,26 @@ export class GroupAdminsRepository {
   }
 
   async ensureBootstrap(groupId: string, seeds: GroupAdminSeed[], source: "env" | "bootstrap"): Promise<void> {
+    if (seeds.length === 0) return;
+
     const timestamp = this.now();
-    for (const seed of seeds) {
-      await this.db.prepare(
-        "INSERT OR IGNORE INTO group_admins (group_id, user_id, display_name, source, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-      ).bind(groupId, seed.userId, seed.displayName, source, timestamp, timestamp).run();
-    }
+    const seedValues = seeds.map((_, index) => `(?${index * 2 + 2}, ?${index * 2 + 3})`).join(", ");
+    const sql = `
+      WITH bootstrap_seeds(user_id, display_name) AS (VALUES ${seedValues})
+      INSERT OR IGNORE INTO group_admins (group_id, user_id, display_name, source, created_at, updated_at)
+      SELECT ?1, user_id, display_name, ?${seeds.length * 2 + 2}, ?${seeds.length * 2 + 3}, ?${seeds.length * 2 + 4}
+      FROM bootstrap_seeds
+      WHERE NOT EXISTS (SELECT 1 FROM group_admins WHERE group_id = ?1)
+    `;
+    const params = [
+      groupId,
+      ...seeds.flatMap((seed) => [seed.userId, seed.displayName]),
+      source,
+      timestamp,
+      timestamp,
+    ];
+
+    await this.db.prepare(sql).bind(...params).run();
   }
 
   async list(groupId: string): Promise<GroupAdminRecord[]> {

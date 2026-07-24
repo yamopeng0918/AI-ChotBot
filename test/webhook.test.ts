@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Miniflare } from "miniflare";
 
 import worker, { createWorker } from "../src/index";
+import { parseAdminCommand } from "../src/admin/commands";
 import migrationSql from "../migrations/0002_group_admins.sql?raw";
 
 const encoder = new TextEncoder();
@@ -165,6 +166,35 @@ describe("POST /webhooks/line queue publication", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ accepted: 0 });
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("queues malformed admin-like mention text through the normal mention path", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const malformedAdminLike = eligibleEvent();
+    malformedAdminLike.message.text = "@bot 管理員新增 @王小明 extra";
+    const targetMention = "@王小明";
+    malformedAdminLike.message.mention = {
+      mentionees: [
+        { type: "user", isSelf: true, index: 0, length: 4 },
+        {
+          type: "user",
+          userId: "user-2",
+          index: malformedAdminLike.message.text.lastIndexOf(targetMention),
+          length: targetMention.length,
+        },
+      ],
+    };
+    expect(parseAdminCommand(malformedAdminLike.message.text)).not.toBeNull();
+
+    const response = await post(JSON.stringify({ events: [malformedAdminLike] }), send);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ accepted: 1 });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      webhookEventId: "event-1",
+      text: "@bot 管理員新增 @王小明 extra",
+    });
   });
 
   it("returns 400 for malformed signed JSON", async () => {

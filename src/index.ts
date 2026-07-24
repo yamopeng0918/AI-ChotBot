@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 
+import { isAdminCommand, parseAdminCommand } from "./admin/commands";
 import { GroupAdminsRepository } from "./admin/group-admins";
 import { handleAdminCommand } from "./admin/handler";
 import { OpenRouterAnswerService } from "./answers/openrouter";
@@ -61,7 +62,16 @@ app.post("/webhooks/line", async (context) => {
   const queuePayload: LineWebhookBody = { ...payload, events: [] };
 
   for (const event of payload.events) {
-    if (event.type === "message" && event.message?.type === "text" && event.source?.type === "group") {
+    const shouldHandleAdminCommand =
+      event.type === "message" &&
+      event.message?.type === "text" &&
+      typeof event.message.text === "string" &&
+      (
+        (event.source?.type === "group" && isAdminCommand(event)) ||
+        (event.source?.type !== "group" && parseAdminCommand(event.message.text) !== null)
+      );
+
+    if (shouldHandleAdminCommand) {
       const result = await handleAdminCommand(event, {
         groupAdmins,
         bootstrapJson: context.env.GROUP_ADMINS_BOOTSTRAP_JSON,

@@ -11,6 +11,7 @@ const encoder = new TextEncoder();
 const ADD_SUCCESS = "已新增管理員。";
 const LIST_PREFIX = "目前管理員列表：";
 const UNAUTHORIZED = "你沒有權限執行這個指令。";
+const WRONG_CHAT_TYPE = "這個指令只能在群組中使用。";
 const LIST_COMMAND = "@bot 管理員列表";
 const TARGET_MENTION = "@王小明";
 const ADD_COMMAND = `@bot 管理員新增 ${TARGET_MENTION}`;
@@ -163,6 +164,22 @@ describe("admin webhook integration", () => {
     ]);
   });
 
+  it("lets malformed group admin-like text fall through to the normal queue path", async () => {
+    const { response, queueSend, lineCalls } = await deliver(groupEvent(`${ADD_COMMAND} extra`));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ accepted: 1 });
+    expect(lineCalls).toHaveLength(0);
+    expect(queueSend).toHaveBeenCalledTimes(1);
+    expect(queueSend.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        text: `${ADD_COMMAND} extra`,
+        groupId: "group-1",
+        userId: "U-seed-1",
+      }),
+    );
+  });
+
   it("replies to list commands with the current group admin list", async () => {
     await new GroupAdminsRepository(db, () => "2026-07-24T00:00:00.000Z").upsert(
       "group-1",
@@ -189,12 +206,13 @@ describe("admin webhook integration", () => {
     );
   });
 
-  it("ignores private-chat admin commands without replying", async () => {
+  it("rejects private-chat admin commands with the wrong-chat-type reply", async () => {
     const { response, queueSend, lineCalls } = await deliver(privateEvent(LIST_COMMAND));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ accepted: 0 });
     expect(queueSend).not.toHaveBeenCalled();
-    expect(lineCalls).toHaveLength(0);
+    expect(lineCalls).toHaveLength(1);
+    expect((lineCalls[0]?.body as { messages: Array<{ text: string }> }).messages[0]?.text).toBe(WRONG_CHAT_TYPE);
   });
 });

@@ -42,6 +42,7 @@ A [reply token](https://developers.line.biz/en/reference/messaging-api/#send-rep
 ## Group admin commands
 
 This bot now supports a per-group admin list seeded from the `GROUP_ADMINS_BOOTSTRAP_JSON` secret. The JSON value should map each `groupId` to an array of `{ userId, displayName }` records.
+The secret is bootstrap-only: after the first admin write, D1 becomes the source of truth for that group's admin list, and later secret edits will not change live permissions.
 
 Use these commands in a group chat:
 
@@ -55,5 +56,6 @@ Operational notes:
 
 - `@bot 管理員新增 ...` and `@bot 管理員移除 ...` accept either a real LINE mention target or a raw `userId`.
 - Mention targets must be backed by LINE mention metadata; plain text that merely looks like a mention is not enough.
+- Only existing group admins can run `管理員列表`, `管理員新增`, and `管理員移除`; non-admins receive a rejection reply.
 - The list command returns the current admins for the active group, including both bootstrap and command-added entries.
 - These commands only work in group chats.

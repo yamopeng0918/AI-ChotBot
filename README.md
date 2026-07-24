@@ -37,18 +37,20 @@ Set every runtime value through Wrangler's encrypted secret store (commands prom
 npx wrangler secret put LINE_CHANNEL_SECRET
 npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 npx wrangler secret put LINE_GROUP_ID
+npx wrangler secret put GROUP_ADMINS_BOOTSTRAP_JSON
 npx wrangler secret put OPENROUTER_API_KEY
 npx wrangler secret put OPENROUTER_MODEL
 npx wrangler secret put ANALYTICS_HASH_KEY
 ```
 
 Use a random, high-entropy `ANALYTICS_HASH_KEY` (at least 32 bytes) and keep its recovery copy in the team's secret manager. `LINE_GROUP_ID` must be the webhook `source.groupId`, not a group name.
+`GROUP_ADMINS_BOOTSTRAP_JSON` should be a JSON object that maps each `groupId` to an array of `{ userId, displayName }` bootstrap admins.
 
 Cloudflare references: [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/), [Queues getting started](https://developers.cloudflare.com/queues/get-started/), and [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/).
 
 ## Local development
 
-Create an uncommitted `.dev.vars` containing the six names above. Never use production credentials in a shared checkout. Start the Worker and local D1/Queue emulation:
+Create an uncommitted `.dev.vars` containing the seven names above. Never use production credentials in a shared checkout. Start the Worker and local D1/Queue emulation:
 
 ```powershell
 npx wrangler d1 migrations apply line-bot-diagnostics --local

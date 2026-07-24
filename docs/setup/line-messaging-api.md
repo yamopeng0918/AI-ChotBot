@@ -38,3 +38,22 @@
 Always validate `x-line-signature` before parsing. LINE can deliver the same event more than once; redelivery preserves `webhookEventId` and the reply token, so this Worker deduplicates on `webhookEventId`. Redelivery is best-effort, not a durable queue guarantee; see [Receive messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/).
 
 A [reply token](https://developers.line.biz/en/reference/messaging-api/#send-reply-message) is single-use and should be used immediately. LINE says normal use beyond one minute is not guaranteed; a redelivered token has additional restrictions, including that it cannot be reused after the original succeeded. Queue delay and OpenRouter latency therefore directly consume the reply window.
+
+## Group admin commands
+
+This bot now supports a per-group admin list seeded from the `GROUP_ADMINS_BOOTSTRAP_JSON` secret. The JSON value should map each `groupId` to an array of `{ userId, displayName }` records.
+
+Use these commands in a group chat:
+
+- `@bot 管理員列表`
+- `@bot 管理員新增 @王小明`
+- `@bot 管理員新增 U1234567890abcdef`
+- `@bot 管理員移除 @王小明`
+- `@bot 管理員移除 U1234567890abcdef`
+
+Operational notes:
+
+- `@bot 管理員新增 ...` and `@bot 管理員移除 ...` accept either a real LINE mention target or a raw `userId`.
+- Mention targets must be backed by LINE mention metadata; plain text that merely looks like a mention is not enough.
+- The list command returns the current admins for the active group, including both bootstrap and command-added entries.
+- These commands only work in group chats.

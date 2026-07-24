@@ -44,8 +44,39 @@ describe("parseAdminCommand", () => {
     });
   });
 
+  it("accepts mention targets with spaces in the display name", () => {
+    const spacedTargetMention = "@Alice Chen";
+    const spacedAddCommand = ADD_MENTION_COMMAND.replace(TARGET_MENTION, spacedTargetMention);
+
+    expect(parseAdminCommand(spacedAddCommand)).toEqual({
+      kind: "add",
+      rawText: spacedAddCommand,
+      target: { userId: "", displayName: spacedTargetMention },
+    });
+  });
+
   it("rejects malformed mention commands with extra text after the target", () => {
-    expect(parseAdminCommand(`${ADD_MENTION_COMMAND} extra`)).toBeNull();
+    const malformedCommand = parseAdminCommand(`${ADD_MENTION_COMMAND} extra`);
+
+    expect(malformedCommand).not.toBeNull();
+    expect(
+      resolveAdminTarget(
+        textEvent({
+          message: {
+            id: "message-malformed",
+            type: "text",
+            text: `${ADD_MENTION_COMMAND} extra`,
+            mention: {
+              mentionees: [
+                { type: "user", isSelf: true, index: 0, length: 4 },
+                { type: "user", userId: "U-target-1", index: ADD_MENTION_COMMAND.lastIndexOf(TARGET_MENTION), length: TARGET_MENTION.length },
+              ],
+            },
+          },
+        }),
+        malformedCommand!,
+      ),
+    ).toBeNull();
     expect(
       isAdminCommand(
         textEvent({
@@ -103,6 +134,33 @@ describe("resolveAdminTarget", () => {
     );
 
     expect(target).toEqual({ userId: "U-target-1", displayName: TARGET_MENTION });
+  });
+
+  it("resolves mention targets with spaces using the trailing mention metadata", () => {
+    const spacedTargetMention = "@Alice Chen";
+    const spacedAddCommand = ADD_MENTION_COMMAND.replace(TARGET_MENTION, spacedTargetMention);
+    const command = parseAdminCommand(spacedAddCommand);
+    expect(command).not.toBeNull();
+
+    const targetIndex = spacedAddCommand.lastIndexOf(spacedTargetMention);
+    const target = resolveAdminTarget(
+      textEvent({
+        message: {
+          id: "message-spaced-mention",
+          type: "text",
+          text: spacedAddCommand,
+          mention: {
+            mentionees: [
+              { type: "user", isSelf: true, index: 0, length: 4 },
+              { type: "user", userId: "U-target-spaced", index: targetIndex, length: spacedTargetMention.length },
+            ],
+          },
+        },
+      }),
+      command!,
+    );
+
+    expect(target).toEqual({ userId: "U-target-spaced", displayName: spacedTargetMention });
   });
 
   it("binds the resolved target to the actual trailing mention token", () => {

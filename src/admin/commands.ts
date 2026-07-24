@@ -14,7 +14,7 @@ const LIST_FAMILY = "管理員列表";
 
 function parseTarget(rawTarget: string): GroupAdminSeed | null {
   if (rawTarget.startsWith("@")) {
-    if (!/^@\S+$/.test(rawTarget)) {
+    if (rawTarget.length < 2) {
       return null;
     }
 
@@ -104,11 +104,17 @@ export function resolveAdminTarget(event: LineWebhookEvent, command: AdminComman
 }
 
 export function isAdminCommand(event: LineWebhookEvent): boolean {
-  return (
-    event.type === "message" &&
-    event.source?.type === "group" &&
-    event.message?.type === "text" &&
-    typeof event.message.text === "string" &&
-    parseAdminCommand(event.message.text) !== null
-  );
+  if (
+    event.type !== "message" ||
+    event.source?.type !== "group" ||
+    event.message?.type !== "text" ||
+    typeof event.message.text !== "string"
+  ) {
+    return false;
+  }
+
+  const command = parseAdminCommand(event.message.text);
+  if (!command) return false;
+
+  return command.target?.userId !== "" || resolveAdminTarget(event, command) !== null;
 }

@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 
+import { GroupAdminsRepository } from "./admin/group-admins";
+import { handleAdminCommand } from "./admin/handler";
 import { OpenRouterAnswerService } from "./answers/openrouter";
 import type { Env } from "./config";
 import { processQuestion } from "./jobs/process-message";
@@ -54,7 +56,33 @@ app.post("/webhooks/line", async (context) => {
     return context.json({ accepted: 0 });
   }
 
-  const messages = selectMentionedMessages(payload, context.env.LINE_GROUP_ID);
+  const lineClient = new LineClient(overrides.fetcher ?? context.env.FETCHER ?? fetch, context.env.LINE_CHANNEL_ACCESS_TOKEN);
+  const groupAdmins = new GroupAdminsRepository(context.env.DB);
+  const queuePayload: LineWebhookBody = { ...payload, events: [] };
+
+  for (const event of payload.events) {
+    if (event.type === "message" && event.message?.type === "text" && event.source?.type === "group") {
+      const result = await handleAdminCommand(event, {
+        groupAdmins,
+        bootstrapJson: context.env.GROUP_ADMINS_BOOTSTRAP_JSON,
+      });
+
+      if (result.handled) {
+        if (result.replyText && event.replyToken) {
+          try {
+            await lineClient.reply(event.replyToken, result.replyText);
+          } catch {
+            return context.json({ error: "line unavailable" }, 503);
+          }
+        }
+        continue;
+      }
+    }
+
+    queuePayload.events.push(event);
+  }
+
+  const messages = selectMentionedMessages(queuePayload, context.env.LINE_GROUP_ID);
   try {
     for (const message of messages) {
       const job: QuestionJob = { ...message, receivedAt: (overrides.now?.() ?? new Date()).toISOString() };

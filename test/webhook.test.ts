@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Miniflare } from "miniflare";
 
 import worker, { createWorker } from "../src/index";
+import migrationSql from "../migrations/0002_group_admins.sql?raw";
 
 const encoder = new TextEncoder();
+let mf: Miniflare | undefined;
+let adminDb: D1Database | undefined;
 
 async function sign(body: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -44,7 +48,11 @@ async function post(body: string, send: ReturnType<typeof vi.fn>) {
     }),
     {
       LINE_CHANNEL_SECRET: "secret",
+      LINE_CHANNEL_ACCESS_TOKEN: "line-token",
       LINE_GROUP_ID: "group-1",
+      GROUP_ADMINS_BOOTSTRAP_JSON: "",
+      FETCHER: vi.fn(async () => new Response(null, { status: 200 })),
+      DB: adminDb,
       MESSAGE_QUEUE: { send },
     } as never,
     {} as never,
@@ -52,6 +60,23 @@ async function post(body: string, send: ReturnType<typeof vi.fn>) {
 }
 
 describe("POST /webhooks/line queue publication", () => {
+  beforeEach(async () => {
+    mf = new Miniflare({
+      modules: true,
+      script: "export default {}",
+      compatibilityDate: "2026-07-17",
+      d1Databases: { DB: "group-admins" },
+    });
+    adminDb = (await mf.getD1Database("DB")) as D1Database;
+    await adminDb.exec(migrationSql.replace(/\r?\n/g, " "));
+  });
+
+  afterEach(async () => {
+    if (mf) await mf.dispose();
+    mf = undefined;
+    adminDb = undefined;
+  });
+
   it("uses an injected queue sender instead of the environment binding", async () => {
     const injectedSend = vi.fn().mockResolvedValue(undefined);
     const envSend = vi.fn().mockResolvedValue(undefined);
@@ -124,6 +149,18 @@ describe("POST /webhooks/line queue publication", () => {
     ineligible.source.groupId = "other-group";
 
     const response = await post(JSON.stringify({ events: [ineligible] }), send);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ accepted: 0 });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not queue admin commands that mention the bot", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const adminCommand = eligibleEvent();
+    adminCommand.message.text = "@bot 管理員列表";
+
+    const response = await post(JSON.stringify({ events: [adminCommand] }), send);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ accepted: 0 });

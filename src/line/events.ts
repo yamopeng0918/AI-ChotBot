@@ -1,3 +1,4 @@
+import { isAdminCommand } from "../admin/commands";
 import type { LineWebhookBody, MentionedMessage } from "./types";
 
 export function selectMentionedMessages(
@@ -13,6 +14,7 @@ export function selectMentionedMessages(
       event.source?.type !== "group" ||
       event.source.groupId !== allowedGroupId ||
       !event.replyToken ||
+      isAdminCommand(event) ||
       !event.message.mention?.mentionees?.some((mentionee) => mentionee.isSelf === true) ||
       typeof event.webhookEventId !== "string" ||
       typeof event.message.id !== "string" ||

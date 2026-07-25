@@ -40,7 +40,6 @@ npx wrangler secret put LINE_GROUP_ID
 npx wrangler secret put GROUP_ADMINS_BOOTSTRAP_JSON
 npx wrangler secret put OPENROUTER_API_KEY
 npx wrangler secret put OPENROUTER_MODEL
-npx wrangler secret put OPENROUTER_FALLBACK_MODEL
 npx wrangler secret put ANALYTICS_HASH_KEY
 ```
 
@@ -49,11 +48,17 @@ Use a random, high-entropy `ANALYTICS_HASH_KEY` (at least 32 bytes) and keep its
 `GROUP_ADMINS_BOOTSTRAP_JSON` is bootstrap-only: after the first admin write, D1 is the source of truth and later secret edits do not change live permissions.
 `OPENROUTER_MODEL` is the primary answer model. `OPENROUTER_FALLBACK_MODEL` is optional and is only used as a safety net after a provider-style failure on the primary model; it is not a parallel generation path. Keep the bot's existing answer style unchanged when choosing models.
 
+Optional OpenRouter secret:
+
+```powershell
+npx wrangler secret put OPENROUTER_FALLBACK_MODEL
+```
+
 Cloudflare references: [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/), [Queues getting started](https://developers.cloudflare.com/queues/get-started/), and [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/).
 
 ## Local development
 
-Create an uncommitted `.dev.vars` containing the seven required names above, plus `OPENROUTER_FALLBACK_MODEL` if you want the optional safety-net model locally. Never use production credentials in a shared checkout. Start the Worker and local D1/Queue emulation:
+Create an uncommitted `.dev.vars` containing the seven required names above. Add `OPENROUTER_FALLBACK_MODEL` only if you want the optional safety-net model locally. Never use production credentials in a shared checkout. Start the Worker and local D1/Queue emulation:
 
 ```powershell
 npx wrangler d1 migrations apply line-bot-diagnostics --local

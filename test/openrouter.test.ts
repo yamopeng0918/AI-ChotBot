@@ -89,6 +89,37 @@ describe("OpenRouterAnswerService", () => {
     ).rejects.toEqual(new AnswerUnavailableError(reason));
   });
 
+  it("falls back to the secondary model when the primary model is rate limited", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          model: "fallback/model",
+          choices: [{ message: { content: "  fallback answer  " } }],
+        }),
+      );
+
+    await expect(
+      new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+        question: "question",
+        locale: "zh-TW",
+      }),
+    ).resolves.toEqual({
+      text: "fallback answer",
+      model: "fallback/model",
+      inputTokens: null,
+      outputTokens: null,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const [primaryUrl, primaryInit] = fetcher.mock.calls[0]!;
+    expect(primaryUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(JSON.parse(String(primaryInit?.body))).toMatchObject({ model: "primary/model" });
+    const [, fallbackInit] = fetcher.mock.calls[1]!;
+    expect(JSON.parse(String(fallbackInit?.body))).toMatchObject({ model: "fallback/model" });
+  });
+
   it("falls back to the secondary model when the primary model returns provider_error", async () => {
     const fetcher = vi
       .fn()

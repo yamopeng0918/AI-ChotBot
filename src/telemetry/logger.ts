@@ -41,7 +41,26 @@ export function createConsoleTelemetryLogger(
 ): TelemetryLogger {
   return {
     emit(event) {
-      write(JSON.stringify(event));
+      try {
+        write(
+          JSON.stringify({
+            event: event.event,
+            stage: event.stage,
+            outcome: event.outcome,
+            timestamp: event.timestamp,
+            webhookEventId: event.webhookEventId,
+            operationId: event.operationId,
+            intent: event.intent,
+            model: event.model,
+            durationMs: event.durationMs,
+            retryDelaySeconds: event.retryDelaySeconds,
+            errorType: event.errorType,
+            detail: event.detail,
+          }),
+        );
+      } catch {
+        // Telemetry must never interrupt request processing.
+      }
     },
   };
 }

@@ -57,15 +57,20 @@ describe("createWorker repository injection", () => {
       purgeExpired: vi.fn(),
     };
     const message = { body: job, ack: vi.fn(), retry: vi.fn() };
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("openrouter.ai")) {
-        return fetcher.mock.calls.filter(([calledInput]) => String(calledInput).includes("openrouter.ai")).length === 1
-          ? new Response("bad", { status: 503 })
-          : jsonResponse({
-              model: "fallback/model",
-              choices: [{ message: { content: "  fallback answer  " } }],
-            });
+        const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+        if (body.model === "primary/model") {
+          return new Response("bad", { status: 503 });
+        }
+        if (body.model === "fallback/model") {
+          return jsonResponse({
+            model: "fallback/model",
+            choices: [{ message: { content: "  fallback answer  " } }],
+          });
+        }
+        throw new Error(`unexpected openrouter model: ${body.model ?? "missing"}`);
       }
       if (url.includes("api.line.me")) return new Response(null, { status: 200 });
       throw new Error(`unexpected fetch: ${url}`);

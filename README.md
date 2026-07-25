@@ -53,7 +53,7 @@ Cloudflare references: [D1 migrations](https://developers.cloudflare.com/d1/refe
 
 ## Local development
 
-Create an uncommitted `.dev.vars` containing the seven names above. Never use production credentials in a shared checkout. Start the Worker and local D1/Queue emulation:
+Create an uncommitted `.dev.vars` containing the eight names above. Never use production credentials in a shared checkout. Start the Worker and local D1/Queue emulation:
 
 ```powershell
 npx wrangler d1 migrations apply line-bot-diagnostics --local

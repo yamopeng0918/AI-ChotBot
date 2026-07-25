@@ -33,9 +33,10 @@ export class OpenRouterAnswerService implements AnswerService {
     private readonly fetcher: Fetcher,
     private readonly apiKey: string,
     private readonly model: string,
+    private readonly fallbackModel?: string,
   ) {}
 
-  async answer(request: AnswerRequest): Promise<AnswerResult> {
+  private async attempt(model: string, request: AnswerRequest): Promise<AnswerResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
 
@@ -47,7 +48,7 @@ export class OpenRouterAnswerService implements AnswerService {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: this.model,
+          model,
           messages: [
             { role: "system", content: buildSystemPrompt() },
             { role: "user", content: request.question },
@@ -80,7 +81,7 @@ export class OpenRouterAnswerService implements AnswerService {
 
       return {
         text,
-        model: typeof payload.model === "string" && payload.model ? payload.model : this.model,
+        model: typeof payload.model === "string" && payload.model ? payload.model : model,
         inputTokens: tokenCount(payload.usage?.prompt_tokens),
         outputTokens: tokenCount(payload.usage?.completion_tokens),
       };
@@ -94,6 +95,37 @@ export class OpenRouterAnswerService implements AnswerService {
       throw new AnswerUnavailableError("provider_error");
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  async answer(request: AnswerRequest): Promise<AnswerResult> {
+    if (!this.fallbackModel || this.fallbackModel === this.model) {
+      return this.attempt(this.model, request);
+    }
+
+    let sawRateLimited = false;
+
+    try {
+      return await this.attempt(this.model, request);
+    } catch (error) {
+      if (!(error instanceof AnswerUnavailableError)) {
+        throw error;
+      }
+      if (error.reason === "rate_limited") {
+        sawRateLimited = true;
+      }
+    }
+
+    try {
+      return await this.attempt(this.fallbackModel, request);
+    } catch (error) {
+      if (!(error instanceof AnswerUnavailableError)) {
+        throw error;
+      }
+      if (error.reason === "rate_limited") {
+        sawRateLimited = true;
+      }
+      throw new AnswerUnavailableError(sawRateLimited ? "rate_limited" : "provider_error");
     }
   }
 }

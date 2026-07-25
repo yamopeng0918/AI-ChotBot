@@ -89,6 +89,48 @@ describe("OpenRouterAnswerService", () => {
     ).rejects.toEqual(new AnswerUnavailableError(reason));
   });
 
+  it("falls back to the secondary model when the primary model returns provider_error", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("bad", { status: 503 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          model: "fallback/model",
+          choices: [{ message: { content: "  fallback answer  " } }],
+        }),
+      );
+
+    await expect(
+      new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+        question: "question",
+        locale: "zh-TW",
+      }),
+    ).resolves.toEqual({
+      text: "fallback answer",
+      model: "fallback/model",
+      inputTokens: null,
+      outputTokens: null,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports provider_error when both primary and fallback models fail", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("bad", { status: 503 }))
+      .mockResolvedValueOnce(new Response("bad", { status: 503 }));
+
+    await expect(
+      new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+        question: "question",
+        locale: "zh-TW",
+      }),
+    ).rejects.toEqual(new AnswerUnavailableError("provider_error"));
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("aborts after 20 seconds and reports a timeout", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn((_url: RequestInfo | URL, init?: RequestInit) =>

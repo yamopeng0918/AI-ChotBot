@@ -5,12 +5,10 @@ export interface Env {
   LINE_CHANNEL_SECRET: string;
   LINE_CHANNEL_ACCESS_TOKEN: string;
   LINE_GROUP_ID: string;
-  OPENROUTER_API_KEY: string;
-  OPENROUTER_MODEL: string;
-  OPENROUTER_FALLBACK_MODEL?: string;
   ANALYTICS_HASH_KEY: string;
   GROUP_ADMINS_BOOTSTRAP_JSON: string;
   MESSAGE_QUEUE: Queue<QuestionJob>;
   DB: D1Database;
+  AI: Ai;
   FETCHER?: Fetcher;
 }

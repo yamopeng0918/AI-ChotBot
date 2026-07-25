@@ -57,42 +57,36 @@ describe("createWorker repository injection", () => {
       purgeExpired: vi.fn(),
     };
     const message = { body: job, ack: vi.fn(), retry: vi.fn() };
+    const answerService = {
+      answer: vi.fn().mockResolvedValue({
+        text: "fallback answer",
+        model: "@cf/meta/llama-3.2-1b-instruct",
+        inputTokens: null,
+        outputTokens: null,
+      }),
+    };
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("openrouter.ai")) {
-        const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
-        if (body.model === "primary/model") {
-          return new Response("bad", { status: 503 });
-        }
-        if (body.model === "fallback/model") {
-          return jsonResponse({
-            model: "fallback/model",
-            choices: [{ message: { content: "  fallback answer  " } }],
-          });
-        }
-        throw new Error(`unexpected openrouter model: ${body.model ?? "missing"}`);
-      }
       if (url.includes("api.line.me")) return new Response(null, { status: 200 });
       throw new Error(`unexpected fetch: ${url}`);
     });
-    const worker = createWorker({ questions: repository, fetcher });
+    const worker = createWorker({ questions: repository, fetcher, answerService });
     const env = {
       LINE_CHANNEL_SECRET: "secret",
       LINE_CHANNEL_ACCESS_TOKEN: "token",
       LINE_GROUP_ID: "group",
-      OPENROUTER_API_KEY: "key",
-      OPENROUTER_MODEL: "primary/model",
-      OPENROUTER_FALLBACK_MODEL: "fallback/model",
       ANALYTICS_HASH_KEY: "hash",
       GROUP_ADMINS_BOOTSTRAP_JSON: "[]",
       MESSAGE_QUEUE: { send: vi.fn() } as never,
       DB: {} as D1Database,
+      AI: { run: vi.fn() } as never,
     } as Env;
 
     await worker.queue({ messages: [message] } as never, env, {} as ExecutionContext);
 
     expect(repository.claim).toHaveBeenCalledOnce();
     expect(message.ack).toHaveBeenCalledOnce();
+    expect(answerService.answer).toHaveBeenCalledOnce();
     const lineCall = fetcher.mock.calls.find(([calledInput]) => String(calledInput).includes("api.line.me"));
     expect(lineCall).toBeDefined();
     const lineBody = JSON.parse(String(lineCall?.[1]?.body));

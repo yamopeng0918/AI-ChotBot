@@ -1,63 +1,49 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnswerUnavailableError, OpenRouterAnswerService } from "../src/answers/openrouter";
+import { AnswerUnavailableError, WorkersAiAnswerService } from "../src/answers/openrouter";
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
-describe("OpenRouterAnswerService", () => {
+describe("WorkersAiAnswerService", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("posts the bounded chat request and parses content and usage", async () => {
-    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      jsonResponse({
-        model: "provider/model-version",
-        choices: [{ message: { content: "  建議先慢跑。  " } }],
-        usage: { prompt_tokens: 123, completion_tokens: 45 },
-      }),
-    );
-    const service = new OpenRouterAnswerService(fetcher, "secret-key", "configured/model");
+  it("posts the bounded chat request and parses response and usage", async () => {
+    const ai = {
+      run: vi.fn(async (_model: string, _input: unknown, _options?: unknown) =>
+        ({
+          response: "  可以，先把配速放慢。  ",
+          usage: { prompt_tokens: 123, completion_tokens: 45 },
+        }),
+      ),
+    };
 
-    await expect(service.answer({ question: "今天怎麼跑？", locale: "zh-TW" })).resolves.toEqual({
-      text: "建議先慢跑。",
-      model: "provider/model-version",
+    const service = new WorkersAiAnswerService(ai as never);
+    await expect(service.answer({ question: "今天膝蓋痛怎麼辦？", locale: "zh-TW" })).resolves.toEqual({
+      text: "可以，先把配速放慢。",
+      model: "@cf/meta/llama-3.2-3b-instruct",
       inputTokens: 123,
       outputTokens: 45,
     });
 
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    const [url, init] = fetcher.mock.calls[0]!;
-    expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
-    expect(init).toMatchObject({
-      method: "POST",
-      headers: {
-        Authorization: "Bearer secret-key",
-        "Content-Type": "application/json",
-      },
-    });
-    const body = JSON.parse(String(init?.body));
-    expect(body).toEqual({
-      model: "configured/model",
+    expect(ai.run).toHaveBeenCalledTimes(1);
+    const [model, input, options] = ai.run.mock.calls[0]!;
+    expect(model).toBe("@cf/meta/llama-3.2-3b-instruct");
+    expect(input).toEqual({
       messages: [
         { role: "system", content: expect.any(String) },
-        { role: "user", content: "今天怎麼跑？" },
+        { role: "user", content: "今天膝蓋痛怎麼辦？" },
       ],
       temperature: 0.3,
       max_tokens: 700,
     });
+    expect(options).toMatchObject({ signal: expect.any(AbortSignal) });
   });
 
   it("returns null token counts when usage is absent", async () => {
-    const fetcher = vi.fn(async () =>
-      jsonResponse({ model: "configured/model", choices: [{ message: { content: "回答" } }] }),
-    );
+    const ai = {
+      run: vi.fn(async () => ({ response: "先休息兩天" })),
+    };
 
     await expect(
-      new OpenRouterAnswerService(fetcher, "key", "configured/model").answer({
+      new WorkersAiAnswerService(ai as never).answer({
         question: "question",
         locale: "zh-TW",
       }),
@@ -65,12 +51,12 @@ describe("OpenRouterAnswerService", () => {
   });
 
   it("rejects empty response content as a provider error", async () => {
-    const fetcher = vi.fn(async () =>
-      jsonResponse({ model: "configured/model", choices: [{ message: { content: "   " } }] }),
-    );
+    const ai = {
+      run: vi.fn(async () => ({ response: "   " })),
+    };
 
     await expect(
-      new OpenRouterAnswerService(fetcher, "key", "configured/model").answer({
+      new WorkersAiAnswerService(ai as never).answer({
         question: "question",
         locale: "zh-TW",
       }),
@@ -81,90 +67,82 @@ describe("OpenRouterAnswerService", () => {
     [429, "rate_limited"],
     [500, "provider_error"],
     [503, "provider_error"],
-  ] as const)("maps HTTP %i to %s", async (status, reason) => {
-    const fetcher = vi.fn(async () => jsonResponse({ error: "not exposed" }, status));
+  ] as const)("maps thrown HTTP %i to %s", async (status, reason) => {
+    const ai = {
+      run: vi.fn(async () => {
+        throw Object.assign(new Error("bad"), { status });
+      }),
+    };
 
     await expect(
-      new OpenRouterAnswerService(fetcher, "key", "model").answer({ question: "q", locale: "zh-TW" }),
+      new WorkersAiAnswerService(ai as never).answer({ question: "q", locale: "zh-TW" }),
     ).rejects.toEqual(new AnswerUnavailableError(reason));
   });
 
   it("falls back to the secondary model when the primary model is rate limited", async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce(new Response("rate limited", { status: 429 }))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          model: "fallback/model",
-          choices: [{ message: { content: "  fallback answer  " } }],
-        }),
-      );
+    const ai = {
+      run: vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+        .mockResolvedValueOnce({ response: "  fallback answer  " }),
+    };
 
     await expect(
-      new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+      new WorkersAiAnswerService(ai as never, "@cf/meta/llama-3.2-3b-instruct", "@cf/meta/llama-3.2-1b-instruct").answer({
         question: "question",
         locale: "zh-TW",
       }),
     ).resolves.toEqual({
       text: "fallback answer",
-      model: "fallback/model",
+      model: "@cf/meta/llama-3.2-1b-instruct",
       inputTokens: null,
       outputTokens: null,
     });
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    const [primaryUrl, primaryInit] = fetcher.mock.calls[0]!;
-    expect(primaryUrl).toBe("https://openrouter.ai/api/v1/chat/completions");
-    expect(JSON.parse(String(primaryInit?.body))).toMatchObject({ model: "primary/model" });
-    const [, fallbackInit] = fetcher.mock.calls[1]!;
-    expect(JSON.parse(String(fallbackInit?.body))).toMatchObject({ model: "fallback/model" });
+    expect(ai.run).toHaveBeenCalledTimes(2);
+    expect(ai.run.mock.calls[0]![0]).toBe("@cf/meta/llama-3.2-3b-instruct");
+    expect(ai.run.mock.calls[1]![0]).toBe("@cf/meta/llama-3.2-1b-instruct");
   });
 
   it("falls back to the secondary model when the primary model returns provider_error", async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce(new Response("bad", { status: 503 }))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          model: "fallback/model",
-          choices: [{ message: { content: "  fallback answer  " } }],
-        }),
-      );
+    const ai = {
+      run: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("bad"))
+        .mockResolvedValueOnce({ response: "fallback answer" }),
+    };
 
     await expect(
-      new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+      new WorkersAiAnswerService(ai as never, "@cf/meta/llama-3.2-3b-instruct", "@cf/meta/llama-3.2-1b-instruct").answer({
         question: "question",
         locale: "zh-TW",
       }),
     ).resolves.toEqual({
       text: "fallback answer",
-      model: "fallback/model",
+      model: "@cf/meta/llama-3.2-1b-instruct",
       inputTokens: null,
       outputTokens: null,
     });
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(ai.run).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to the secondary model when the primary model times out", async () => {
     vi.useFakeTimers();
-    const fetcher = vi
-      .fn()
-      .mockImplementationOnce((_url: RequestInfo | URL, init?: RequestInit) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            reject(new DOMException("Aborted", "AbortError"));
-          });
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          model: "fallback/model",
-          choices: [{ message: { content: "  fallback answer  " } }],
-        }),
-      );
+    const ai = {
+      run: vi
+        .fn()
+        .mockImplementationOnce((_model: string, _input: unknown, options?: { signal?: AbortSignal }) =>
+          new Promise<never>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => {
+              reject(new DOMException("Aborted", "AbortError"));
+            });
+          }),
+        )
+        .mockResolvedValueOnce({ response: "fallback answer" }),
+    };
 
-    const answer = new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+    const answer = new WorkersAiAnswerService(ai as never, "@cf/meta/llama-3.2-3b-instruct", "@cf/meta/llama-3.2-1b-instruct").answer({
       question: "question",
       locale: "zh-TW",
     });
@@ -173,48 +151,26 @@ describe("OpenRouterAnswerService", () => {
 
     await expect(answer).resolves.toEqual({
       text: "fallback answer",
-      model: "fallback/model",
+      model: "@cf/meta/llama-3.2-1b-instruct",
       inputTokens: null,
       outputTokens: null,
     });
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    const [, fallbackInit] = fetcher.mock.calls[1]!;
-    const fallbackBody = JSON.parse(String(fallbackInit?.body));
-    expect(fallbackBody.model).toBe("fallback/model");
+    expect(ai.run).toHaveBeenCalledTimes(2);
   });
 
   it("reports provider_error when both primary and fallback models fail", async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce(new Response("bad", { status: 503 }))
-      .mockResolvedValueOnce(new Response("bad", { status: 503 }));
+    const ai = {
+      run: vi.fn().mockRejectedValue(new Error("bad")),
+    };
 
     await expect(
-      new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+      new WorkersAiAnswerService(ai as never, "@cf/meta/llama-3.2-3b-instruct", "@cf/meta/llama-3.2-1b-instruct").answer({
         question: "question",
         locale: "zh-TW",
       }),
     ).rejects.toEqual(new AnswerUnavailableError("provider_error"));
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
-  });
-
-  it("aborts after 20 seconds and reports a timeout", async () => {
-    vi.useFakeTimers();
-    const fetcher = vi.fn((_url: RequestInfo | URL, init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-      }),
-    );
-    const answer = new OpenRouterAnswerService(fetcher, "key", "model").answer({
-      question: "q",
-      locale: "zh-TW",
-    });
-    const rejection = expect(answer).rejects.toEqual(new AnswerUnavailableError("timeout"));
-
-    await vi.advanceTimersByTimeAsync(20_000);
-
-    await rejection;
+    expect(ai.run).toHaveBeenCalledTimes(2);
   });
 });

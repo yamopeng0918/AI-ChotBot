@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { isAdminCommand, parseAdminCommand } from "./admin/commands";
 import { GroupAdminsRepository } from "./admin/group-admins";
 import { handleAdminCommand } from "./admin/handler";
-import { OpenRouterAnswerService } from "./answers/openrouter";
+import { WorkersAiAnswerService } from "./answers/openrouter";
 import type { Env } from "./config";
 import { processQuestion } from "./jobs/process-message";
 import type { QuestionJob } from "./jobs/types";
@@ -11,8 +11,12 @@ import { LineClient } from "./line/client";
 import { selectMentionedMessages } from "./line/events";
 import { verifyLineSignature } from "./line/signature";
 import type { LineWebhookBody } from "./line/types";
+import { GroupSettingsRepository } from "./storage/group-settings";
 import { QuestionsRepository, pseudonymizeUserId } from "./storage/questions";
+import { WeatherCacheRepository } from "./storage/weather-cache";
 import type { ProcessDependencies } from "./jobs/process-message";
+import { OpenMeteoWeatherService } from "./weather/openmeteo";
+import { D1MetricsRepository } from "./telemetry/metrics";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
@@ -22,6 +26,9 @@ type WorkerDependencies = {
   now?: () => Date;
   queue?: Pick<Queue<QuestionJob>, "send">;
   questions?: QuestionsDependency | QuestionsFactory;
+  answerService?: ProcessDependencies["answerService"];
+  weatherService?: ProcessDependencies["weatherService"];
+  metrics?: ProcessDependencies["metrics"];
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -30,6 +37,8 @@ export function createWorker(overrides: WorkerDependencies = {}) {
     if (typeof overrides.questions === "function") return overrides.questions(env);
     return overrides.questions ?? new QuestionsRepository(env.DB);
   };
+  const groupSettingsFor = (env: Env): Pick<GroupSettingsRepository, "getWeatherCity" | "setWeatherCity" | "clearWeatherCity"> =>
+    new GroupSettingsRepository(env.DB);
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 
@@ -59,6 +68,7 @@ app.post("/webhooks/line", async (context) => {
 
   const lineClient = new LineClient(overrides.fetcher ?? context.env.FETCHER ?? fetch, context.env.LINE_CHANNEL_ACCESS_TOKEN);
   const groupAdmins = new GroupAdminsRepository(context.env.DB);
+  const groupSettings = groupSettingsFor(context.env);
   const queuePayload: LineWebhookBody = { ...payload, events: [] };
 
   for (const event of payload.events) {
@@ -74,6 +84,7 @@ app.post("/webhooks/line", async (context) => {
     if (shouldHandleAdminCommand) {
       const result = await handleAdminCommand(event, {
         groupAdmins,
+        groupSettings,
         bootstrapJson: context.env.GROUP_ADMINS_BOOTSTRAP_JSON,
       });
 
@@ -111,15 +122,18 @@ return {
   },
   async queue(batch: MessageBatch<QuestionJob>, env: Env, _context: ExecutionContext) {
     const fetcher = overrides.fetcher ?? env.FETCHER ?? fetch;
+    const answerService = overrides.answerService ?? new WorkersAiAnswerService(env.AI);
+    const weatherService =
+      overrides.weatherService ?? new OpenMeteoWeatherService(fetcher, new WeatherCacheRepository(env.DB), overrides.now);
+    const metrics = overrides.metrics ?? new D1MetricsRepository(env.DB);
+    const groupSettings = groupSettingsFor(env);
     const dependencies = {
-      answerService: new OpenRouterAnswerService(
-        fetcher,
-        env.OPENROUTER_API_KEY,
-        env.OPENROUTER_MODEL,
-        env.OPENROUTER_FALLBACK_MODEL,
-      ),
+      answerService,
+      weatherService,
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
       questions: questionsFor(env),
+      groupSettings,
+      metrics,
       pseudonymize: (userId: string | null) => pseudonymizeUserId(userId, env.ANALYTICS_HASH_KEY),
       now: overrides.now,
     };

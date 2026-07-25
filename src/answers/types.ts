@@ -1,6 +1,8 @@
 export interface AnswerRequest {
   question: string;
   locale: "zh-TW";
+  groupId?: string;
+  defaultLocation?: string | null;
 }
 
 export interface AnswerResult {

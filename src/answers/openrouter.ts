@@ -13,10 +13,10 @@ export class AnswerUnavailableError extends Error {
   }
 }
 
-type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type AiBinding = Pick<Ai, "run">;
 
-interface OpenRouterResponse {
-  model?: unknown;
+interface WorkersAiResponse {
+  response?: unknown;
   choices?: Array<{ message?: { content?: unknown } }>;
   usage?: {
     prompt_tokens?: unknown;
@@ -28,66 +28,73 @@ function tokenCount(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-export class OpenRouterAnswerService implements AnswerService {
-  constructor(
-    private readonly fetcher: Fetcher,
-    private readonly apiKey: string,
-    private readonly model: string,
-    private readonly fallbackModel?: string,
-  ) {}
+function responseText(payload: WorkersAiResponse | string): string {
+  if (typeof payload === "string") {
+    return payload.trim();
+  }
+
+  const direct = payload.response;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+
+  const choice = payload.choices?.[0]?.message?.content;
+  if (typeof choice === "string") {
+    return choice.trim();
+  }
+
+  return "";
+}
+
+function errorStatus(error: unknown): number | null {
+  if (typeof error !== "object" || error === null) return null;
+  const status = Reflect.get(error, "status");
+  return typeof status === "number" && Number.isFinite(status) ? status : null;
+}
+
+const PRIMARY_MODEL = "@cf/meta/llama-3.2-3b-instruct";
+const FALLBACK_MODEL = "@cf/meta/llama-3.2-1b-instruct";
+const REQUEST_TIMEOUT_MS = 20_000;
+
+export class WorkersAiAnswerService implements AnswerService {
+  constructor(private readonly ai: AiBinding, private readonly model = PRIMARY_MODEL, private readonly fallbackModel = FALLBACK_MODEL) {}
 
   private async attempt(model: string, request: AnswerRequest): Promise<AnswerResult> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const response = await this.fetcher("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
+      const payload = (await this.ai.run(
+        model,
+        {
           messages: [
             { role: "system", content: buildSystemPrompt() },
             { role: "user", content: request.question },
           ],
           temperature: 0.3,
           max_tokens: 700,
-        }),
-        signal: controller.signal,
-      });
+        },
+        { signal: controller.signal },
+      )) as WorkersAiResponse | string;
 
-      if (response.status === 429) {
-        throw new AnswerUnavailableError("rate_limited");
-      }
-      if (!response.ok) {
-        throw new AnswerUnavailableError("provider_error");
-      }
-
-      let payload: OpenRouterResponse;
-      try {
-        payload = (await response.json()) as OpenRouterResponse;
-      } catch {
-        throw new AnswerUnavailableError("provider_error");
-      }
-
-      const rawContent = payload.choices?.[0]?.message?.content;
-      const text = typeof rawContent === "string" ? rawContent.trim() : "";
+      const text = responseText(payload);
       if (!text) {
         throw new AnswerUnavailableError("provider_error");
       }
 
+      const usage = typeof payload === "object" && payload !== null ? payload.usage : undefined;
       return {
         text,
-        model: typeof payload.model === "string" && payload.model ? payload.model : model,
-        inputTokens: tokenCount(payload.usage?.prompt_tokens),
-        outputTokens: tokenCount(payload.usage?.completion_tokens),
+        model,
+        inputTokens: tokenCount(usage?.prompt_tokens ?? null),
+        outputTokens: tokenCount(usage?.completion_tokens ?? null),
       };
     } catch (error) {
       if (error instanceof AnswerUnavailableError) {
         throw error;
+      }
+      if (errorStatus(error) === 429) {
+        throw new AnswerUnavailableError("rate_limited");
       }
       if (controller.signal.aborted) {
         throw new AnswerUnavailableError("timeout");

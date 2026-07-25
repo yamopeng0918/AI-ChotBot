@@ -24,7 +24,7 @@ function event(overrides: { groupId?: string; mentioned?: boolean; webhookEventI
     message: {
       id: "message-e2e-1",
       type: "text",
-      text: "@running-bot 明天適合跑步嗎？",
+      text: "@running-bot 今天跑步後膝蓋痛怎麼辦？",
       mention: { mentionees: overrides.mentioned === false ? [] : [{ isSelf: true }] },
     },
   };
@@ -48,7 +48,6 @@ describe("signed LINE webhook to completed reply", () => {
   let mf: Miniflare;
   let db: D1Database;
   let jobs: QuestionJob[];
-  let openRouterCalls: RequestInit[];
   let lineCalls: RequestInit[];
 
   beforeEach(async () => {
@@ -58,39 +57,50 @@ describe("signed LINE webhook to completed reply", () => {
       await db.prepare(statement).run();
     }
     jobs = [];
-    openRouterCalls = [];
     lineCalls = [];
   });
 
   afterEach(async () => mf.dispose());
 
   function fixture() {
+    const answerService = {
+      answer: vi.fn().mockResolvedValue({
+        text: "先放慢配速、補水與觀察症狀。",
+        model: "@cf/meta/llama-3.2-3b-instruct",
+        inputTokens: 88,
+        outputTokens: 32,
+      }),
+    };
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("openrouter.ai")) {
-        openRouterCalls.push(init ?? {});
-        return Response.json({ model: "test/model", choices: [{ message: { content: "可以，記得補水。" } }] });
-      }
       if (url.includes("api.line.me")) {
         const prepared = await db.prepare("SELECT status, prepared_status, answer, model FROM questions WHERE webhook_event_id=?1").bind("event-e2e-1").first();
-        expect(prepared).toEqual({ status: "processing", prepared_status: "answered", answer: "可以，記得補水。", model: "test/model" });
+        expect(prepared).toEqual({
+          status: "processing",
+          prepared_status: "answered",
+          answer: "先放慢配速、補水與觀察症狀。",
+          model: "@cf/meta/llama-3.2-3b-instruct",
+        });
         lineCalls.push(init ?? {});
         return new Response(null, { status: 200 });
       }
       throw new Error(`unexpected endpoint: ${url}`);
     });
-    const worker = createWorker({ fetcher, now: () => new Date("2026-07-18T00:00:00.000Z") });
+    const worker = createWorker({
+      fetcher,
+      now: () => new Date("2026-07-18T00:00:00.000Z"),
+      answerService,
+    });
     const env = {
       LINE_CHANNEL_SECRET: "channel-secret",
       LINE_CHANNEL_ACCESS_TOKEN: "line-token",
       LINE_GROUP_ID: "allowed-group",
-      OPENROUTER_API_KEY: "openrouter-key",
-      OPENROUTER_MODEL: "test/model",
       ANALYTICS_HASH_KEY: "analytics-key-at-least-32-bytes-long",
       MESSAGE_QUEUE: { send: async (job: QuestionJob) => { jobs.push(job); } },
       DB: db,
+      AI: { run: vi.fn() } as never,
     } as unknown as Env;
-    return { worker, env };
+    return { worker, env, answerService };
   }
 
   async function deliver(worker: ReturnType<typeof createWorker>, env: Env, webhookEvent: ReturnType<typeof event>) {
@@ -102,40 +112,49 @@ describe("signed LINE webhook to completed reply", () => {
     }), env, {} as ExecutionContext);
   }
 
-  it("queues an eligible mention, calls both providers, and completes one D1 row", async () => {
-    const { worker, env } = fixture();
+  it("queues an eligible mention, calls the answer service, and completes one D1 row", async () => {
+    const { worker, env, answerService } = fixture();
     expect((await deliver(worker, env, event())).status).toBe(200);
     expect(jobs).toHaveLength(1);
 
     await worker.queue!(batch(jobs[0]!), env, {} as ExecutionContext);
 
-    expect(openRouterCalls).toHaveLength(1);
+    expect(answerService.answer).toHaveBeenCalledOnce();
     expect(lineCalls).toHaveLength(1);
-    expect(JSON.parse(String(lineCalls[0]!.body))).toEqual({ replyToken: "reply-e2e-1", messages: [{ type: "text", text: "可以，記得補水。" }] });
+    expect(JSON.parse(String(lineCalls[0]!.body))).toEqual({
+      replyToken: "reply-e2e-1",
+      messages: [{ type: "text", text: "先放慢配速、補水與觀察症狀。" }],
+    });
     const rows = await db.prepare("SELECT webhook_event_id, status, question, answer FROM questions").all();
-    expect(rows.results).toEqual([{ webhook_event_id: "event-e2e-1", status: "answered", question: "@running-bot 明天適合跑步嗎？", answer: "可以，記得補水。" }]);
+    expect(rows.results).toEqual([
+      {
+        webhook_event_id: "event-e2e-1",
+        status: "answered",
+        question: "@running-bot 今天跑步後膝蓋痛怎麼辦？",
+        answer: "先放慢配速、補水與觀察症狀。",
+      },
+    ]);
   });
 
   it.each([
     ["non-mention", event({ mentioned: false })],
     ["wrong group", event({ groupId: "other-group" })],
-  ])("ignores %s without queue, network, or diagnostic writes", async (_name, webhookEvent) => {
+  ])("ignores %s without queue or LINE writes", async (_name, webhookEvent) => {
     const { worker, env } = fixture();
     expect((await deliver(worker, env, webhookEvent)).status).toBe(200);
     expect(jobs).toHaveLength(0);
-    expect(openRouterCalls).toHaveLength(0);
     expect(lineCalls).toHaveLength(0);
     expect((await db.prepare("SELECT COUNT(*) AS count FROM questions").first<{ count: number }>())?.count).toBe(0);
   });
 
   it("does not create a second visible reply for a duplicate webhookEventId", async () => {
-    const { worker, env } = fixture();
+    const { worker, env, answerService } = fixture();
     await deliver(worker, env, event());
     await deliver(worker, env, event());
     expect(jobs).toHaveLength(2);
     await worker.queue!(batch(jobs[0]!), env, {} as ExecutionContext);
     await worker.queue!(batch(jobs[1]!), env, {} as ExecutionContext);
-    expect(openRouterCalls).toHaveLength(1);
+    expect(answerService.answer).toHaveBeenCalledOnce();
     expect(lineCalls).toHaveLength(1);
     expect((await db.prepare("SELECT COUNT(*) AS count FROM questions").first<{ count: number }>())?.count).toBe(1);
   });

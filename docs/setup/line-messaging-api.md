@@ -37,13 +37,13 @@
 
 Always validate `x-line-signature` before parsing. LINE can deliver the same event more than once; redelivery preserves `webhookEventId` and the reply token, so this Worker deduplicates on `webhookEventId`. Redelivery is best-effort, not a durable queue guarantee; see [Receive messages](https://developers.line.biz/en/docs/messaging-api/receiving-messages/).
 
-A [reply token](https://developers.line.biz/en/reference/messaging-api/#send-reply-message) is single-use and should be used immediately. LINE says normal use beyond one minute is not guaranteed; a redelivered token has additional restrictions, including that it cannot be reused after the original succeeded. Queue delay and OpenRouter latency therefore directly consume the reply window.
+A [reply token](https://developers.line.biz/en/reference/messaging-api/#send-reply-message) is single-use and should be used immediately. LINE says normal use beyond one minute is not guaranteed; a redelivered token has additional restrictions, including that it cannot be reused after the original succeeded. Queue delay and Workers AI latency therefore directly consume the reply window.
 
-## OpenRouter model selection
+## Workers AI model selection
 
-Set `OPENROUTER_MODEL` to the fastest stable model you trust for the bot's usual replies. Optionally set `OPENROUTER_FALLBACK_MODEL` to a more reliable backup model. The bot always tries the primary model first and only falls back when the primary provider fails, times out, or returns another provider-style failure.
+Workers AI is provided through the `AI` binding in `wrangler.jsonc`; no OpenRouter API key or model environment variable is required. The bot uses the primary Cloudflare-hosted model defined in code and switches to the smaller fallback model only when the primary provider fails, times out, or returns another provider-style failure.
 
-Treat the fallback as a safety net, not a parallel generation path. Keep the bot's existing answer style unchanged when choosing models.
+Treat the fallback as a safety net, not a parallel generation path. Keep the bot's existing answer style unchanged when adjusting the model constants.
 
 ## Group admin commands
 

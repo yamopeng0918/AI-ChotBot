@@ -100,8 +100,6 @@ describe("admin webhook integration", () => {
       LINE_CHANNEL_SECRET: "secret",
       LINE_CHANNEL_ACCESS_TOKEN: "line-token",
       LINE_GROUP_ID: "group-1",
-      OPENROUTER_API_KEY: "openrouter-key",
-      OPENROUTER_MODEL: "test/model",
       ANALYTICS_HASH_KEY: "analytics-key-at-least-32-bytes-long",
       GROUP_ADMINS_BOOTSTRAP_JSON: JSON.stringify({
         "group-1": [{ userId: "U-seed-1", displayName: "Seeder" }],
@@ -109,6 +107,7 @@ describe("admin webhook integration", () => {
       MESSAGE_QUEUE: { send: queueSend },
       DB: db,
       FETCHER: fetcher,
+      AI: { run: vi.fn() } as never,
       ...overrides,
     } as unknown as Env;
 

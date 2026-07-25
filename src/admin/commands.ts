@@ -1,16 +1,18 @@
 import type { GroupAdminSeed } from "./group-admins";
 import type { LineWebhookEvent } from "../line/types";
 
-export type AdminCommand = {
-  kind: "add" | "remove" | "list";
-  target?: GroupAdminSeed;
-  rawText: string;
-};
+export type AdminCommand =
+  | { kind: "add" | "remove" | "list"; target?: GroupAdminSeed; rawText: string }
+  | { kind: "set-weather-city"; city: string; rawText: string }
+  | { kind: "show-weather-city" | "clear-weather-city"; rawText: string };
 
 const COMMAND_PREFIX = "@bot ";
 const ADD_FAMILY = "管理員新增";
 const REMOVE_FAMILY = "管理員移除";
 const LIST_FAMILY = "管理員列表";
+const SET_WEATHER_CITY_FAMILY = "設定預設城市";
+const SHOW_WEATHER_CITY_FAMILY = "查看預設城市";
+const CLEAR_WEATHER_CITY_FAMILY = "清除預設城市";
 
 function parseTarget(rawTarget: string): GroupAdminSeed | null {
   if (rawTarget.startsWith("@")) {
@@ -37,6 +39,19 @@ export function parseAdminCommand(text: string): AdminCommand | null {
   if (content === LIST_FAMILY) {
     return { kind: "list", rawText };
   }
+  if (content === SHOW_WEATHER_CITY_FAMILY) {
+    return { kind: "show-weather-city", rawText };
+  }
+  if (content === CLEAR_WEATHER_CITY_FAMILY) {
+    return { kind: "clear-weather-city", rawText };
+  }
+
+  const setWeatherPrefix = `${SET_WEATHER_CITY_FAMILY} `;
+  if (content.startsWith(setWeatherPrefix)) {
+    const city = content.slice(setWeatherPrefix.length).trim();
+    if (!city) return null;
+    return { kind: "set-weather-city", city, rawText };
+  }
 
   for (const [family, kind] of [
     [ADD_FAMILY, "add"],
@@ -55,8 +70,12 @@ export function parseAdminCommand(text: string): AdminCommand | null {
   return null;
 }
 
+function hasTarget(command: AdminCommand): command is AdminCommand & { target: GroupAdminSeed } {
+  return "target" in command;
+}
+
 export function resolveAdminTarget(event: LineWebhookEvent, command: AdminCommand): GroupAdminSeed | null {
-  if (!command.target) return null;
+  if (!hasTarget(command)) return null;
   if (event.source?.type !== "group") return null;
 
   if (command.target.userId !== "") {
@@ -116,5 +135,6 @@ export function isAdminCommand(event: LineWebhookEvent): boolean {
   const command = parseAdminCommand(event.message.text);
   if (!command) return false;
 
-  return command.target?.userId !== "" || resolveAdminTarget(event, command) !== null;
+  if (!hasTarget(command)) return true;
+  return command.target.userId !== "" || resolveAdminTarget(event, command) !== null;
 }

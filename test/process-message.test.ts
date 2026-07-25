@@ -8,6 +8,18 @@ const claimed = { state: "claimed", leaseToken: "lease-a", leaseUntil: "2026-07-
 function deps(claim: unknown = claimed) { return { now: () => new Date("2026-07-18T00:00:00.000Z"), answerService: { answer: vi.fn().mockResolvedValue({ text: "Try the riverside.", model: "model" }) }, lineClient: { reply: vi.fn().mockResolvedValue(undefined), push: vi.fn().mockResolvedValue(undefined) }, questions: { claim: vi.fn().mockResolvedValue(claim), prepare: vi.fn().mockResolvedValue(undefined), complete: vi.fn().mockResolvedValue(undefined), release: vi.fn().mockResolvedValue(undefined) }, pseudonymize: vi.fn().mockResolvedValue("user-key") }; }
 describe("processQuestion", () => {
   it("claims with a 60-second lease and prepares before LINE delivery", async () => { const d = deps(); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" }); expect(d.questions.claim).toHaveBeenCalledWith("event-1", "2026-07-18T00:01:00.000Z", job.receivedAt); expect(d.questions.prepare).toHaveBeenCalledWith(expect.anything(), "answered", "lease-a"); expect(d.questions.prepare.mock.invocationCallOrder[0]!).toBeLessThan(d.lineClient.reply.mock.invocationCallOrder[0]!); });
+  it("routes weather questions to the weather service and records a metric", async () => {
+    const metrics = { record: vi.fn().mockResolvedValue(undefined) };
+    const weatherService = { answer: vi.fn().mockResolvedValue({ text: "台北現在 31°C，局部多雲。", model: "open-meteo" }) };
+    const d = { ...deps(), weatherService, metrics };
+    const weatherJob = { ...job, text: "今天台北天氣如何？" };
+
+    await expect(processQuestion(weatherJob, d)).resolves.toEqual({ disposition: "ack", status: "answered" });
+    expect(weatherService.answer).toHaveBeenCalledOnce();
+    expect(d.answerService.answer).not.toHaveBeenCalled();
+    expect(d.lineClient.reply).toHaveBeenCalledWith(weatherJob.replyToken, "台北現在 31°C，局部多雲。");
+    expect(metrics.record).toHaveBeenCalledWith(expect.objectContaining({ intent: "weather", status: "answered", model: "open-meteo" }));
+  });
   it("returns a bounded delayed retry for a concurrent busy claim", async () => { const d = deps({ state: "busy", leaseUntil: "2026-07-18T00:00:45.000Z" }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 45 }); expect(d.answerService.answer).not.toHaveBeenCalled(); expect(d.lineClient.reply).not.toHaveBeenCalled(); });
   it("acks a completed duplicate without LLM or LINE calls", async () => { const d = deps({ state: "completed" }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack" }); expect(d.answerService.answer).not.toHaveBeenCalled(); expect(d.lineClient.reply).not.toHaveBeenCalled(); });
   it("resumes expired prepared work without calling the LLM", async () => { const d = deps({ ...claimed, leaseToken: "lease-b", prepared: { text: "saved", model: "saved-model", status: "answered" } }); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" }); expect(d.answerService.answer).not.toHaveBeenCalled(); expect(d.lineClient.reply).toHaveBeenCalledWith("reply-1", "saved"); });

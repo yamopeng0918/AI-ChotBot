@@ -1,5 +1,6 @@
 import { parseAdminCommand, resolveAdminTarget } from "./commands";
 import { GroupAdminsRepository, type GroupAdminRecord } from "./group-admins";
+import type { GroupSettingsRepository } from "../storage/group-settings";
 import type { LineWebhookEvent } from "../line/types";
 
 const ADD_SUCCESS = "已新增管理員。";
@@ -9,9 +10,13 @@ const UNAUTHORIZED = "你沒有權限執行這個指令。";
 const WRONG_CHAT_TYPE = "這個指令只能在群組中使用。";
 const NOT_FOUND = "找不到這位管理員。";
 const ALREADY_EXISTS = "這位管理員已經在名單內。";
+const WEATHER_CITY_SET = "已更新群組預設城市：";
+const WEATHER_CITY_CLEARED = "已清除群組預設城市。";
+const WEATHER_CITY_EMPTY = "這個群組還沒有設定預設城市。";
 
 type AdminHandlerDependencies = {
   groupAdmins: GroupAdminsRepository;
+  groupSettings: Pick<GroupSettingsRepository, "getWeatherCity" | "setWeatherCity" | "clearWeatherCity">;
   bootstrapJson: string | undefined;
 };
 
@@ -54,6 +59,24 @@ export async function handleAdminCommand(
       handled: true,
       replyText: formatAdminList(await dependencies.groupAdmins.list(event.source.groupId)),
     };
+  }
+
+  if (command.kind === "show-weather-city") {
+    const city = await dependencies.groupSettings.getWeatherCity(event.source.groupId);
+    return {
+      handled: true,
+      replyText: city ? `這個群組的預設城市是：${city}` : WEATHER_CITY_EMPTY,
+    };
+  }
+
+  if (command.kind === "set-weather-city") {
+    await dependencies.groupSettings.setWeatherCity(event.source.groupId, command.city);
+    return { handled: true, replyText: `${WEATHER_CITY_SET}${command.city}` };
+  }
+
+  if (command.kind === "clear-weather-city") {
+    const cleared = await dependencies.groupSettings.clearWeatherCity(event.source.groupId);
+    return { handled: true, replyText: cleared ? WEATHER_CITY_CLEARED : WEATHER_CITY_EMPTY };
   }
 
   const target = resolveAdminTarget(event, command);

@@ -39,6 +39,12 @@ Always validate `x-line-signature` before parsing. LINE can deliver the same eve
 
 A [reply token](https://developers.line.biz/en/reference/messaging-api/#send-reply-message) is single-use and should be used immediately. LINE says normal use beyond one minute is not guaranteed; a redelivered token has additional restrictions, including that it cannot be reused after the original succeeded. Queue delay and OpenRouter latency therefore directly consume the reply window.
 
+## OpenRouter model selection
+
+Set `OPENROUTER_MODEL` to the fastest stable model you trust for the bot's usual replies. Optionally set `OPENROUTER_FALLBACK_MODEL` to a more reliable backup model. The bot always tries the primary model first and only falls back when the primary provider fails, times out, or returns another provider-style failure.
+
+Treat the fallback as a safety net, not a parallel generation path. Keep the bot's existing answer style unchanged when choosing models.
+
 ## Group admin commands
 
 This bot now supports a per-group admin list seeded from the `GROUP_ADMINS_BOOTSTRAP_JSON` secret. The JSON value should map each `groupId` to an array of `{ userId, displayName }` records.

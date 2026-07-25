@@ -40,12 +40,14 @@ npx wrangler secret put LINE_GROUP_ID
 npx wrangler secret put GROUP_ADMINS_BOOTSTRAP_JSON
 npx wrangler secret put OPENROUTER_API_KEY
 npx wrangler secret put OPENROUTER_MODEL
+npx wrangler secret put OPENROUTER_FALLBACK_MODEL
 npx wrangler secret put ANALYTICS_HASH_KEY
 ```
 
 Use a random, high-entropy `ANALYTICS_HASH_KEY` (at least 32 bytes) and keep its recovery copy in the team's secret manager. `LINE_GROUP_ID` must be the webhook `source.groupId`, not a group name.
 `GROUP_ADMINS_BOOTSTRAP_JSON` should be a JSON object that maps each `groupId` to an array of `{ userId, displayName }` bootstrap admins.
 `GROUP_ADMINS_BOOTSTRAP_JSON` is bootstrap-only: after the first admin write, D1 is the source of truth and later secret edits do not change live permissions.
+`OPENROUTER_MODEL` is the primary answer model. `OPENROUTER_FALLBACK_MODEL` is optional and is only used as a safety net after a provider-style failure on the primary model; it is not a parallel generation path. Keep the bot's existing answer style unchanged when choosing models.
 
 Cloudflare references: [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/), [Queues getting started](https://developers.cloudflare.com/queues/get-started/), and [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/).
 

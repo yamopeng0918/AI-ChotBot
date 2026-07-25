@@ -115,6 +115,44 @@ describe("OpenRouterAnswerService", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it("falls back to the secondary model when the primary model times out", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi
+      .fn()
+      .mockImplementationOnce((_url: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          model: "fallback/model",
+          choices: [{ message: { content: "  fallback answer  " } }],
+        }),
+      );
+
+    const answer = new OpenRouterAnswerService(fetcher, "key", "primary/model", "fallback/model").answer({
+      question: "question",
+      locale: "zh-TW",
+    });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await expect(answer).resolves.toEqual({
+      text: "fallback answer",
+      model: "fallback/model",
+      inputTokens: null,
+      outputTokens: null,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const [, fallbackInit] = fetcher.mock.calls[1]!;
+    const fallbackBody = JSON.parse(String(fallbackInit?.body));
+    expect(fallbackBody.model).toBe("fallback/model");
+  });
+
   it("reports provider_error when both primary and fallback models fail", async () => {
     const fetcher = vi
       .fn()

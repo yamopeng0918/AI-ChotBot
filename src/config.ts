@@ -7,6 +7,7 @@ export interface Env {
   LINE_GROUP_ID: string;
   OPENROUTER_API_KEY: string;
   OPENROUTER_MODEL: string;
+  OPENROUTER_FALLBACK_MODEL?: string;
   ANALYTICS_HASH_KEY: string;
   GROUP_ADMINS_BOOTSTRAP_JSON: string;
   MESSAGE_QUEUE: Queue<QuestionJob>;

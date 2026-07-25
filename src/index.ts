@@ -112,7 +112,12 @@ return {
   async queue(batch: MessageBatch<QuestionJob>, env: Env, _context: ExecutionContext) {
     const fetcher = overrides.fetcher ?? env.FETCHER ?? fetch;
     const dependencies = {
-      answerService: new OpenRouterAnswerService(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
+      answerService: new OpenRouterAnswerService(
+        fetcher,
+        env.OPENROUTER_API_KEY,
+        env.OPENROUTER_MODEL,
+        env.OPENROUTER_FALLBACK_MODEL,
+      ),
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
       questions: questionsFor(env),
       pseudonymize: (userId: string | null) => pseudonymizeUserId(userId, env.ANALYTICS_HASH_KEY),

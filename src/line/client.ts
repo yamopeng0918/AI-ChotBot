@@ -1,6 +1,7 @@
 export type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 const REPLY_ENDPOINT = "https://api.line.me/v2/bot/message/reply";
+const PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push";
 const MAX_TEXT_CODE_POINTS = 4_500;
 const TRUNCATION_SUFFIX = "…";
 
@@ -14,8 +15,14 @@ export class LineReplyError extends Error {
 function truncateText(text: string): string {
   const codePoints = [...text];
   if (codePoints.length <= MAX_TEXT_CODE_POINTS) return text;
-  return codePoints.slice(0, MAX_TEXT_CODE_POINTS - [...TRUNCATION_SUFFIX].length).join("")
-    + TRUNCATION_SUFFIX;
+  return codePoints.slice(0, MAX_TEXT_CODE_POINTS - [...TRUNCATION_SUFFIX].length).join("") + TRUNCATION_SUFFIX;
+}
+
+function messageBody(targetKey: "replyToken" | "to", targetValue: string, text: string): string {
+  return JSON.stringify({
+    [targetKey]: targetValue,
+    messages: [{ type: "text", text: truncateText(text) }],
+  });
 }
 
 export class LineClient {
@@ -26,19 +33,24 @@ export class LineClient {
 
   async reply(replyToken: string, text: string): Promise<void> {
     if (!text.trim()) throw new LineReplyError();
+    await this.send(REPLY_ENDPOINT, messageBody("replyToken", replyToken, text));
+  }
 
+  async push(to: string, text: string): Promise<void> {
+    if (!text.trim()) throw new LineReplyError();
+    await this.send(PUSH_ENDPOINT, messageBody("to", to, text));
+  }
+
+  private async send(endpoint: string, body: string): Promise<void> {
     let response: Response;
     try {
-      response = await this.fetcher(REPLY_ENDPOINT, {
+      response = await this.fetcher.call(globalThis, endpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          replyToken,
-          messages: [{ type: "text", text: truncateText(text) }],
-        }),
+        body,
       });
     } catch {
       throw new LineReplyError();

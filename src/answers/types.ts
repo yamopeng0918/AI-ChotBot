@@ -14,6 +14,7 @@ export interface AnswerResult {
 
 export type AnswerProviderRole = "primary" | "fallback";
 export type AnswerProviderFailureReason = "rate_limited" | "provider_error" | "timeout";
+export type AnswerStorageOperation = "cache_read" | "cache_write";
 export type AnswerProviderEvent =
   | {
       type: "attempt.started";
@@ -42,6 +43,11 @@ export type AnswerProviderEvent =
       role: "fallback";
       model: string;
       reason: AnswerProviderFailureReason;
+    }
+  | {
+      type: "storage.failed";
+      provider: "open_meteo";
+      operation: AnswerStorageOperation;
     };
 
 export type AnswerProviderObserver = (event: AnswerProviderEvent) => void;

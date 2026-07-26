@@ -5,7 +5,7 @@ import worker from "../src/index";
 import { LineReplyError } from "../src/line/client";
 import type { TelemetryEvent, TelemetryLogger } from "../src/telemetry/logger";
 import { AnswerUnavailableError, WorkersAiAnswerService } from "../src/answers/openrouter";
-import { WeatherStorageError } from "../src/weather/openmeteo";
+import type { AnswerProviderObserver } from "../src/answers/types";
 const job: QuestionJob = { webhookEventId: "event-1", replyToken: "reply-1", groupId: "group-1", userId: "user-1", messageId: "message-1", text: "Where should I run?", timestamp: 1, receivedAt: "2026-07-18T00:00:00.000Z" };
 const claimed = { state: "claimed", leaseToken: "lease-a", leaseUntil: "2026-07-18T00:01:00.000Z", createdAt: job.receivedAt, expiresAt: "2026-08-17T00:00:00.000Z" };
 function deps(claim: unknown = claimed) { return { now: () => new Date("2026-07-18T00:00:00.000Z"), answerService: { answer: vi.fn().mockResolvedValue({ text: "Try the riverside.", model: "model" }) }, lineClient: { reply: vi.fn().mockResolvedValue(undefined), push: vi.fn().mockResolvedValue(undefined) }, questions: { claim: vi.fn().mockResolvedValue(claim), prepare: vi.fn().mockResolvedValue(undefined), complete: vi.fn().mockResolvedValue(undefined), release: vi.fn().mockResolvedValue(undefined) }, pseudonymize: vi.fn().mockResolvedValue("user-key") }; }
@@ -455,27 +455,54 @@ describe("processQuestion", () => {
     expect(JSON.stringify(events)).not.toContain("private");
   });
 
-  it("classifies weather cache storage failures without calling them provider failures", async () => {
+  it.each([
+    ["cache_read", "weather_cache_read"],
+    ["cache_write", "weather_cache_write"],
+  ] as const)("keeps weather %s failures best-effort and returns the valid answer", async (operation, detail) => {
     const { dependencies, events } = observed({
       ...deps(),
       weatherService: {
-        answer: vi.fn().mockRejectedValue(new WeatherStorageError("cache_read")),
+        answer: vi.fn().mockImplementation(async (_request, observe?: AnswerProviderObserver) => {
+          observe?.({ type: "storage.failed", provider: "open_meteo", operation });
+          return {
+            text: "valid weather answer",
+            model: "open-meteo",
+            inputTokens: null,
+            outputTokens: null,
+          };
+        }),
       },
     });
     const weatherJob = { ...job, text: "Taipei weather" };
 
     await expect(processQuestion(weatherJob, dependencies)).resolves.toEqual({
       disposition: "ack",
-      status: "provider_unavailable",
+      status: "answered",
     });
 
-    expect(events.find((event) => event.event === "answer.failed")).toMatchObject({
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "weather.cache.failed",
+      "answer.completed",
+      "storage.prepare.completed",
+      "line.reply.completed",
+      "storage.complete.completed",
+      "question.completed",
+    ]);
+    expect(events[2]).toMatchObject({
       stage: "storage",
-      outcome: "fallback",
+      outcome: "failed",
       errorType: "storage_unavailable",
-      detail: "weather_cache_read",
+      detail,
     });
+    expect(dependencies.lineClient.reply).toHaveBeenCalledWith(
+      weatherJob.replyToken,
+      "valid weather answer",
+    );
     expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: "answer.failed" }),
+      expect.objectContaining({ event: "question.retry" }),
       expect.objectContaining({ errorType: "weather_provider_error" }),
     ]));
   });

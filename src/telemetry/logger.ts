@@ -23,6 +23,7 @@ export const TELEMETRY_EVENT_NAMES = [
   "answer.completed",
   "answer.failed",
   "weather.settings.failed",
+  "weather.cache.failed",
   "line.reply.completed",
   "line.reply.failed",
   "line.push.completed",

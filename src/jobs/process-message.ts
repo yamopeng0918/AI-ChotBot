@@ -16,7 +16,6 @@ import type {
   TelemetryLogger,
   TelemetryStage,
 } from "../telemetry/logger";
-import { WeatherStorageError } from "../weather/openmeteo";
 import type { QuestionJob } from "./types";
 
 export const PROVIDER_UNAVAILABLE_TEXT = "目前服務暫時無法使用，請稍後再試。";
@@ -72,13 +71,6 @@ function answerFailure(
   detail?: TelemetryDetail;
 } {
   if (intent === "weather") {
-    if (error instanceof WeatherStorageError) {
-      return {
-        stage: "storage",
-        errorType: "storage_unavailable",
-        detail: error.operation === "cache_read" ? "weather_cache_read" : "weather_cache_write",
-      };
-    }
     return {
       stage: "answer",
       errorType:
@@ -259,6 +251,21 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
 
     const providerStartedAt = safeNow(dependencies.now);
     const observeProvider = (providerEvent: AnswerProviderEvent): void => {
+      if (providerEvent.type === "storage.failed") {
+        emit(dependencies.logger, {
+          event: "weather.cache.failed",
+          stage: "storage",
+          outcome: "failed",
+          webhookEventId: job.webhookEventId,
+          intent: metricIntent,
+          errorType: "storage_unavailable",
+          detail:
+            providerEvent.operation === "cache_read"
+              ? "weather_cache_read"
+              : "weather_cache_write",
+        }, dependencies.now);
+        return;
+      }
       const detail = providerEvent.role === "primary" ? "primary_model" : "fallback_model";
       if (providerEvent.type === "attempt.started") {
         emit(dependencies.logger, {

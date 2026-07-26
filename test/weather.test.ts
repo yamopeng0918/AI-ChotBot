@@ -1,11 +1,44 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { AnswerProviderEvent } from "../src/answers/types";
 import { OpenMeteoWeatherService } from "../src/weather/openmeteo";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
+  });
+}
+
+function successfulTaipeiFetcher() {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("geocoding-api.open-meteo.com")) {
+      return jsonResponse({
+        results: [{
+          name: "Taipei",
+          country: "Taiwan",
+          latitude: 25.033,
+          longitude: 121.5654,
+          timezone: "Asia/Taipei",
+        }],
+      });
+    }
+    return jsonResponse({
+      current: {
+        temperature_2m: 31.2,
+        weather_code: 1,
+        wind_speed_10m: 12.3,
+        precipitation: 0,
+      },
+      daily: {
+        time: ["2026-07-25"],
+        temperature_2m_max: [32],
+        temperature_2m_min: [26],
+        precipitation_sum: [0],
+        weather_code: [1],
+      },
+    });
   });
 }
 
@@ -125,71 +158,59 @@ describe("OpenMeteoWeatherService", () => {
     expect(cache.set).toHaveBeenCalledTimes(1);
   });
 
-  it("classifies cache-read storage failures without exposing the database error", async () => {
+  it("continues to Open-Meteo after a cache-read failure and reports safe storage telemetry", async () => {
     const cache = {
       get: vi.fn().mockRejectedValue(new Error("D1 cache read credentials=private")),
-      set: vi.fn(),
+      set: vi.fn().mockResolvedValue(undefined),
     };
-    const service = new OpenMeteoWeatherService(vi.fn(), cache as never);
+    const fetcher = successfulTaipeiFetcher();
+    const service = new OpenMeteoWeatherService(fetcher, cache as never);
+    const observations: AnswerProviderEvent[] = [];
 
-    const error = await service
-      .answer({ question: "Taipei weather", locale: "zh-TW" })
-      .catch((caught: unknown) => caught);
-
-    expect(error).toMatchObject({
-      name: "WeatherStorageError",
-      operation: "cache_read",
-      message: "weather cache unavailable",
+    await expect(
+      service.answer(
+        { question: "Taipei weather", locale: "zh-TW" },
+        (event) => observations.push(event),
+      ),
+    ).resolves.toMatchObject({
+      model: "open-meteo",
+      text: expect.stringContaining("Taipei / Taiwan"),
     });
-    expect(String(error)).not.toContain("credentials=private");
+    expect(observations).toEqual([{
+      type: "storage.failed",
+      provider: "open_meteo",
+      operation: "cache_read",
+    }]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(cache.set).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(observations)).not.toContain("credentials=private");
   });
 
-  it("classifies cache-write storage failures without exposing the database error", async () => {
+  it("returns the valid provider answer after a cache-write failure and reports safe storage telemetry", async () => {
     const cache = {
       get: vi.fn().mockResolvedValue(null),
       set: vi.fn().mockRejectedValue(new Error("D1 cache write credentials=private")),
     };
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("geocoding-api.open-meteo.com")) {
-        return jsonResponse({
-          results: [{
-            name: "Taipei",
-            country: "Taiwan",
-            latitude: 25.033,
-            longitude: 121.5654,
-            timezone: "Asia/Taipei",
-          }],
-        });
-      }
-      return jsonResponse({
-        current: {
-          temperature_2m: 31.2,
-          weather_code: 1,
-          wind_speed_10m: 12.3,
-          precipitation: 0,
-        },
-        daily: {
-          time: ["2026-07-25"],
-          temperature_2m_max: [32],
-          temperature_2m_min: [26],
-          precipitation_sum: [0],
-          weather_code: [1],
-        },
-      });
-    });
+    const fetcher = successfulTaipeiFetcher();
     const service = new OpenMeteoWeatherService(fetcher, cache as never);
+    const observations: AnswerProviderEvent[] = [];
 
-    const error = await service
-      .answer({ question: "Taipei weather", locale: "zh-TW" })
-      .catch((caught: unknown) => caught);
-
-    expect(error).toMatchObject({
-      name: "WeatherStorageError",
-      operation: "cache_write",
-      message: "weather cache unavailable",
+    await expect(
+      service.answer(
+        { question: "Taipei weather", locale: "zh-TW" },
+        (event) => observations.push(event),
+      ),
+    ).resolves.toMatchObject({
+      model: "open-meteo",
+      text: expect.stringContaining("Taipei / Taiwan"),
     });
-    expect(String(error)).not.toContain("credentials=private");
+    expect(observations).toEqual([{
+      type: "storage.failed",
+      provider: "open_meteo",
+      operation: "cache_write",
+    }]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(observations)).not.toContain("credentials=private");
   });
 
   it("asks for a city when the prompt lacks one", async () => {

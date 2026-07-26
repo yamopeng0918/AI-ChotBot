@@ -1,4 +1,10 @@
-import type { AnswerRequest, AnswerResult, AnswerService } from "../answers/types";
+import type {
+  AnswerProviderObserver,
+  AnswerRequest,
+  AnswerResult,
+  AnswerService,
+  AnswerStorageOperation,
+} from "../answers/types";
 import { extractWeatherLocationQuery } from "../intents/router";
 import type { WeatherCacheRepository } from "../storage/weather-cache";
 
@@ -35,15 +41,14 @@ type ForecastResult = {
 const REQUEST_TIMEOUT_MS = 15_000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
-export type WeatherStorageOperation = "cache_read" | "cache_write";
-
-export class WeatherStorageError extends Error {
-  readonly operation: WeatherStorageOperation;
-
-  constructor(operation: WeatherStorageOperation) {
-    super("weather cache unavailable");
-    this.name = "WeatherStorageError";
-    this.operation = operation;
+function reportCacheFailure(
+  observe: AnswerProviderObserver | undefined,
+  operation: AnswerStorageOperation,
+): void {
+  try {
+    observe?.({ type: "storage.failed", provider: "open_meteo", operation });
+  } catch {
+    // Optional cache telemetry must not affect the weather answer.
   }
 }
 
@@ -154,7 +159,10 @@ export class OpenMeteoWeatherService implements AnswerService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async answer(request: AnswerRequest): Promise<AnswerResult> {
+  async answer(
+    request: AnswerRequest,
+    observe?: AnswerProviderObserver,
+  ): Promise<AnswerResult> {
     const cityQuery = extractWeatherLocationQuery(request.question) ?? request.defaultLocation?.trim() ?? null;
     if (!cityQuery) {
       return {
@@ -171,7 +179,7 @@ export class OpenMeteoWeatherService implements AnswerService {
     try {
       cached = await this.cache?.get(cacheKey, now.toISOString());
     } catch {
-      throw new WeatherStorageError("cache_read");
+      reportCacheFailure(observe, "cache_read");
     }
     if (cached) {
       return {
@@ -215,7 +223,7 @@ export class OpenMeteoWeatherService implements AnswerService {
         createdAt: now.toISOString(),
       });
     } catch {
-      throw new WeatherStorageError("cache_write");
+      reportCacheFailure(observe, "cache_write");
     }
 
     return {

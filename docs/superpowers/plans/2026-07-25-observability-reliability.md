@@ -210,11 +210,15 @@ selection.
 
 ### Weather storage boundary
 
-Weather cache read/write failures are surfaced through safe typed
-classifications:
+Weather cache read/write failures are surfaced through the safe typed
+`storage.failed` callback and mapped to `weather.cache.failed`:
 
 - `storage_unavailable` + `weather_cache_read`;
 - `storage_unavailable` + `weather_cache_write`.
+
+Caching is optional: cache-read failure continues to Open-Meteo, and
+cache-write failure returns the already valid provider answer. Neither path
+returns `provider_unavailable` or a retry.
 
 Group-settings failures remain
 `weather.settings.failed/storage_unavailable/weather_settings`. Provider
@@ -228,7 +232,8 @@ timeout/failure remains `weather_timeout` or `weather_provider_error`.
 - [ ] Fallback success reports its own start and completion.
 - [ ] Observer failure does not change the provider result.
 - [ ] Weather timeout is distinct from provider failure.
-- [ ] Cache read/write failures are distinct from weather provider failures.
+- [ ] Cache read/write failures are distinct from weather provider failures,
+      preserve answer success, and emit safe storage telemetry.
 - [ ] No provider event contains question text or a raw caught error.
 
 Run:

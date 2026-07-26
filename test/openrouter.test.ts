@@ -244,4 +244,57 @@ describe("WorkersAiAnswerService", () => {
 
     expect(ai.run).toHaveBeenCalledTimes(2);
   });
+
+  it("preserves a fallback timeout as the terminal reason when neither attempt was rate limited", async () => {
+    vi.useFakeTimers();
+    const ai = {
+      run: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("primary provider failed"))
+        .mockImplementationOnce((_model: string, _input: unknown, options?: { signal?: AbortSignal }) =>
+          new Promise<never>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => {
+              reject(new DOMException("Aborted", "AbortError"));
+            });
+          }),
+        ),
+    };
+
+    const answer = new WorkersAiAnswerService(
+      ai as never,
+      "@cf/meta/llama-3.2-3b-instruct",
+      "@cf/meta/llama-3.2-1b-instruct",
+    ).answer({
+      question: "question",
+      locale: "zh-TW",
+    });
+    const rejection = expect(answer).rejects.toEqual(
+      new AnswerUnavailableError("timeout"),
+    );
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    await rejection;
+    expect(ai.run).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps rate limiting ahead of a fallback timeout", async () => {
+    const ai = {
+      run: vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+        .mockRejectedValueOnce(new AnswerUnavailableError("timeout")),
+    };
+
+    await expect(
+      new WorkersAiAnswerService(
+        ai as never,
+        "@cf/meta/llama-3.2-3b-instruct",
+        "@cf/meta/llama-3.2-1b-instruct",
+      ).answer({
+        question: "question",
+        locale: "zh-TW",
+      }),
+    ).rejects.toEqual(new AnswerUnavailableError("rate_limited"));
+  });
 });

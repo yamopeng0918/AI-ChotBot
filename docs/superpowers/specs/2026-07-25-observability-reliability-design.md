@@ -290,8 +290,14 @@ settings/cache failures:
 - provider failure: `weather_provider_error`;
 - group settings failure: `weather.settings.failed`,
   `storage_unavailable`, `weather_settings`;
-- cache read/write failure: `storage_unavailable` with
-  `weather_cache_read` or `weather_cache_write`.
+- cache read/write failure: `weather.cache.failed`,
+  `storage_unavailable`, with `weather_cache_read` or
+  `weather_cache_write`.
+
+The weather cache is optional. A cache-read failure emits the safe storage
+event and continues to Open-Meteo. A cache-write failure after a valid provider
+response emits the safe storage event and returns that valid answer. Neither
+cache failure becomes `provider_unavailable` or a retry.
 
 ### Prepared and duplicate claims
 
@@ -319,8 +325,9 @@ It does not claim a new successful completion whose stored outcome is unknown.
 ### Storage
 
 Successful claim, prepare, and complete transitions emit stable success events.
-Claim, prepare, complete, and release failures emit classified storage events
-without raw errors.
+Mandatory claim, prepare, complete, group-settings, and release failures emit
+classified storage events without raw errors. Optional weather-cache failures
+emit `weather.cache.failed` and do not change the answer or disposition.
 
 A retry disposition always terminates with `question.retry` and includes
 `retryDelaySeconds`. A best-effort `storage.release.failed` event does not
@@ -384,9 +391,11 @@ Existing degradation behavior remains:
 
 - Workers AI primary failure may use the configured fallback model.
 - An unusable LINE reply token may fall back to LINE push.
-- Temporary provider, Queue, or D1 failures use bounded retries.
+- Temporary provider, Queue, or mandatory D1 persistence/settings failures use
+  bounded retries.
 - Exhausted Queue retries flow to the configured dead-letter queue.
-- Optional D1 metric failure does not fail the primary answer flow.
+- Optional weather-cache and D1 metric failures do not fail the primary answer
+  flow.
 - Telemetry projection or writer failure never changes processing.
 
 Every `ProcessResult` retry path has an explicit terminal telemetry event with

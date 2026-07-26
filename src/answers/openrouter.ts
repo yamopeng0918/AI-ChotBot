@@ -197,7 +197,7 @@ export class WorkersAiAnswerService implements AnswerService {
       if (error.reason === "rate_limited") {
         sawRateLimited = true;
       }
-      throw new AnswerUnavailableError(sawRateLimited ? "rate_limited" : "provider_error");
+      throw new AnswerUnavailableError(sawRateLimited ? "rate_limited" : error.reason);
     }
   }
 }

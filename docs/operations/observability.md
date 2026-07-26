@@ -252,9 +252,12 @@ Every retry terminal contains `retryDelaySeconds`.
 - Group-settings failure emits `weather.settings.failed` with
   `errorType=storage_unavailable` and `detail=weather_settings`, then
   `question.retry`.
-- Weather cache read/write failures are classified as
+- Weather cache read/write failures emit `weather.cache.failed`, classified as
   `storage_unavailable` with `detail=weather_cache_read` or
   `weather_cache_write`; they must not be classified as provider errors.
+  A read failure continues to Open-Meteo, and a write failure preserves the
+  valid provider answer. The correlated flow still ends in
+  `answer.completed` and `question.completed`, with no `question.retry`.
 
 ### Admin commands
 

@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Do not log message text, answers, LINE user IDs, group IDs, reply tokens, authorization headers, secrets, arbitrary error objects, or complete provider responses.
+- Do not log message text, answers, LINE user IDs, group IDs, reply tokens, authorization headers, secrets, arbitrary error objects, or complete provider responses during normal operation. The existing `LINE_GROUP_ID=__DISCOVER__` operator workflow is the sole exception: it may temporarily output the source `groupId`, and operators must disable discovery immediately after obtaining it.
 - Use `webhookEventId` for LINE-event correlation and `crypto.randomUUID()` for scheduled operations.
 - Logs use stable JSON fields and allowlisted `errorType`/`detail` values.
 - Workers Logs sampling is `1.0`; Traces sampling is `0.1`.
@@ -473,7 +473,7 @@ const logger = overrides.logger ?? createConsoleTelemetryLogger();
 const timestamp = () => (overrides.now?.() ?? new Date()).toISOString();
 ```
 
-Emit the exact classifications asserted in Step 1. Never log the body, signature, user, group, or token. Pass `logger` into `ProcessDependencies`.
+Emit the exact classifications asserted in Step 1. Never log the body, signature, user, group, or token in structured telemetry. Preserve the existing `LINE_GROUP_ID=__DISCOVER__` temporary operator-only group-ID output as the sole exception. Pass `logger` into `ProcessDependencies`.
 
 - [ ] **Step 4: Run webhook tests and verify GREEN**
 
@@ -821,6 +821,9 @@ Normal logs may contain event names, stage, outcome, `webhookEventId`, intent,
 model, duration, retry delay, and allowlisted classifications. They must not
 contain message or answer text, LINE user/group IDs, reply tokens, credentials,
 authorization headers, or raw provider errors.
+
+The temporary `LINE_GROUP_ID=__DISCOVER__` workflow is the sole exception: it
+prints the source group ID for setup and must be disabled immediately afterward.
 
 ## Dashboard inspection
 

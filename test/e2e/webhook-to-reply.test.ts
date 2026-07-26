@@ -146,13 +146,17 @@ describe("signed LINE webhook to completed reply", () => {
     await worker.queue!(batch(jobs[0]!), env, {} as ExecutionContext);
 
     const correlated = events.filter((entry) => entry.webhookEventId === "event-e2e-1");
-    expect(correlated.map((entry) => entry.event)).toEqual(expect.arrayContaining([
+    expect(correlated.map((entry) => entry.event)).toEqual([
       "webhook.enqueue.completed",
       "question.started",
       "answer.completed",
       "line.reply.completed",
       "question.completed",
-    ]));
+    ]);
+    expect(correlated.at(-1)).toMatchObject({
+      event: "question.completed",
+      outcome: "success",
+    });
     expect(JSON.stringify(correlated)).not.toContain("@running-bot");
     expect(JSON.stringify(correlated)).not.toContain("line-user-1");
     expect(JSON.stringify(correlated)).not.toContain("reply-e2e-1");

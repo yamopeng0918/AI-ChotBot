@@ -9,6 +9,7 @@ A Cloudflare Worker that accepts signed LINE group webhooks, queues eligible men
 
 ```powershell
 npm install
+npm run types:bindings:check
 npm test
 npm run typecheck
 npm run deploy -- --dry-run
@@ -91,9 +92,10 @@ npm install
 ### 2) Verify the code before deploy
 
 ```powershell
+npm run types:bindings:check
 npm test
 npm run typecheck
-wrangler whoami
+npm run deploy -- --dry-run
 ```
 
 ### 3) Set required secrets
@@ -129,6 +131,8 @@ npm run deploy
 npx wrangler tail
 ```
 
+During the initial baseline phase, Workers Logs use 100% sampling and Traces use 10% sampling. Follow the [observability operations runbook](docs/operations/observability.md) for Dashboard inspection and privacy auditing.
+
 ### 6) If you only need the shortest deploy sequence
 
 ```powershell
@@ -140,7 +144,7 @@ npm run deploy
 
 ## Production smoke check
 
-After a real deployment, validate the live bot with production credentials only:
+After a real deployment, follow the [observability operations runbook](docs/operations/observability.md#production-smoke-check) and validate the live bot with production credentials only. These production-only checks remain pending until a real deployment; local fake endpoints cannot satisfy them.
 
 1. `curl.exe https://<worker-host>/health` and require HTTP 200 with `{"status":"ok"}`.
 2. In the allowed group, send one LINE-native mention with a harmless running question. Require exactly one visible answer.
@@ -176,6 +180,8 @@ Notes:
 - Never print secret values or store them in Git.
 
 ## Rollback
+
+Follow the [observability rollback procedure](docs/operations/observability.md#rollback).
 
 1. List deployments and roll back to the recorded known-good ID:
 

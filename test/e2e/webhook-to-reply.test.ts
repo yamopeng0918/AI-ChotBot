@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWorker } from "../../src/index";
 import type { Env } from "../../src/config";
 import type { QuestionJob } from "../../src/jobs/types";
+import type { TelemetryEvent } from "../../src/telemetry/logger";
 import migration from "../../migrations/0001_questions.sql?raw";
 
 const encoder = new TextEncoder();
@@ -63,6 +64,7 @@ describe("signed LINE webhook to completed reply", () => {
   afterEach(async () => mf.dispose());
 
   function fixture() {
+    const events: TelemetryEvent[] = [];
     const answerService = {
       answer: vi.fn().mockResolvedValue({
         text: "先放慢配速、補水與觀察症狀。",
@@ -90,6 +92,7 @@ describe("signed LINE webhook to completed reply", () => {
       fetcher,
       now: () => new Date("2026-07-18T00:00:00.000Z"),
       answerService,
+      logger: { emit: (telemetryEvent) => events.push(telemetryEvent) },
     });
     const env = {
       LINE_CHANNEL_SECRET: "channel-secret",
@@ -100,7 +103,7 @@ describe("signed LINE webhook to completed reply", () => {
       DB: db,
       AI: { run: vi.fn() } as never,
     } as unknown as Env;
-    return { worker, env, answerService };
+    return { worker, env, answerService, events };
   }
 
   async function deliver(worker: ReturnType<typeof createWorker>, env: Env, webhookEvent: ReturnType<typeof event>) {
@@ -134,6 +137,25 @@ describe("signed LINE webhook to completed reply", () => {
         answer: "先放慢配速、補水與觀察症狀。",
       },
     ]);
+  });
+
+  it("correlates the webhook-to-reply sequence without sensitive LINE values", async () => {
+    const { worker, env, events } = fixture();
+
+    expect((await deliver(worker, env, event())).status).toBe(200);
+    await worker.queue!(batch(jobs[0]!), env, {} as ExecutionContext);
+
+    const correlated = events.filter((entry) => entry.webhookEventId === "event-e2e-1");
+    expect(correlated.map((entry) => entry.event)).toEqual(expect.arrayContaining([
+      "webhook.enqueue.completed",
+      "question.started",
+      "answer.completed",
+      "line.reply.completed",
+      "question.completed",
+    ]));
+    expect(JSON.stringify(correlated)).not.toContain("@running-bot");
+    expect(JSON.stringify(correlated)).not.toContain("line-user-1");
+    expect(JSON.stringify(correlated)).not.toContain("reply-e2e-1");
   });
 
   it.each([

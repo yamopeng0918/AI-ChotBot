@@ -124,6 +124,12 @@ app.post("/webhooks/line", async (context) => {
     for (const message of messages) {
       const job: QuestionJob = { ...message, receivedAt: (overrides.now?.() ?? new Date()).toISOString() };
       await (overrides.queue ?? context.env.MESSAGE_QUEUE).send(job);
+      emit({
+        event: "webhook.enqueue.completed",
+        stage: "webhook",
+        outcome: "success",
+        webhookEventId: job.webhookEventId,
+      });
     }
   } catch {
     emit({ event: "webhook.enqueue.failed", stage: "webhook", outcome: "failed", errorType: "queue_unavailable" });

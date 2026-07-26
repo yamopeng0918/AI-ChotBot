@@ -149,6 +149,33 @@ describe("processQuestion", () => {
 
     await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" });
   });
+  it("preserves an ack when the telemetry clock fails after processing starts", async () => {
+    let reads = 0;
+    const d = {
+      ...deps(),
+      logger: { emit: () => undefined },
+      now: () => {
+        reads += 1;
+        if (reads >= 5) throw new Error("telemetry clock unavailable");
+        return new Date("2026-07-18T00:00:00.000Z");
+      },
+    };
+
+    await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" });
+  });
+  it("does not write raw LINE push errors to the console", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const d = deps();
+    d.lineClient.reply.mockRejectedValueOnce(new LineReplyError(503));
+    d.lineClient.push.mockRejectedValueOnce(new Error("sensitive push failure"));
+
+    try {
+      await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 1 });
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+    }
+  });
   it("emits a retry event when pseudonymization fails", async () => {
     const events: TelemetryEvent[] = [];
     const d = { ...deps(), logger: { emit: (event: TelemetryEvent) => events.push(event) } };

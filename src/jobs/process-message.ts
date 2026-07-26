@@ -36,6 +36,14 @@ function elapsedMs(startedAt: Date, now?: () => Date): number {
   return Math.max(0, (now?.() ?? new Date()).getTime() - startedAt.getTime());
 }
 
+function safeElapsedMs(startedAt: Date, now?: () => Date): number {
+  try {
+    return elapsedMs(startedAt, now);
+  } catch {
+    return 0;
+  }
+}
+
 function answerErrorType(
   intent: "general" | "weather",
   error: unknown,
@@ -100,7 +108,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
       outcome: "success",
       webhookEventId: job.webhookEventId,
       intent: metricIntent,
-      durationMs: elapsedMs(startedAt, dependencies.now),
+      durationMs: safeElapsedMs(startedAt, dependencies.now),
     }, dependencies.now);
     return { disposition: "ack" };
   }
@@ -271,7 +279,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
           intent: metricIntent,
           status,
           model,
-          durationMs: elapsedMs(startedAt, dependencies.now),
+          durationMs: safeElapsedMs(startedAt, dependencies.now),
           detail: "push_fallback",
           createdAt: new Date().toISOString(),
         });
@@ -282,10 +290,10 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
           webhookEventId: job.webhookEventId,
           intent: metricIntent,
           model,
-          durationMs: elapsedMs(startedAt, dependencies.now),
+          durationMs: safeElapsedMs(startedAt, dependencies.now),
         }, dependencies.now);
         return { disposition: "ack", status };
-      } catch (pushError) {
+      } catch {
         emit(dependencies.logger, pushCompleted
           ? {
               event: "question.retry",
@@ -306,7 +314,6 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
               model,
               errorType: "line_push_failed",
             }, dependencies.now);
-        console.info("question:push-error", job.webhookEventId, pushError instanceof Error ? pushError.message : String(pushError));
         try {
           await dependencies.questions.complete({ ...record, status: "reply_failed" }, leaseToken);
         } catch {}
@@ -315,7 +322,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
           intent: metricIntent,
           status: "reply_failed",
           model,
-          durationMs: elapsedMs(startedAt, dependencies.now),
+          durationMs: safeElapsedMs(startedAt, dependencies.now),
           detail: "reply_and_push_failed",
           createdAt: new Date().toISOString(),
         });
@@ -356,7 +363,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
     intent: metricIntent,
     status,
     model,
-    durationMs: elapsedMs(startedAt, dependencies.now),
+    durationMs: safeElapsedMs(startedAt, dependencies.now),
     detail: claim.prepared ? "reused_prepared" : metricIntent,
     createdAt: new Date().toISOString(),
   });
@@ -368,7 +375,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
     webhookEventId: job.webhookEventId,
     intent: metricIntent,
     model,
-    durationMs: elapsedMs(startedAt, dependencies.now),
+    durationMs: safeElapsedMs(startedAt, dependencies.now),
   }, dependencies.now);
 
   return { disposition: "ack", status };

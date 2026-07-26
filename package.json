@@ -7,7 +7,9 @@
     "test": "vitest run",
     "test:e2e": "vitest run test/e2e/webhook-to-reply.test.ts",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
+    "types:bindings": "wrangler types worker-configuration.d.ts --env-interface WorkerEnv",
+    "types:bindings:check": "wrangler types worker-configuration.d.ts --env-interface WorkerEnv --check",
+    "typecheck": "npm run types:bindings:check && tsc --noEmit",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },

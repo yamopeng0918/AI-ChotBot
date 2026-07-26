@@ -4,6 +4,7 @@ import { createWorker } from "../src/index";
 import type { Env } from "../src/config";
 import type { QuestionJob } from "../src/jobs/types";
 import type { TelemetryEvent } from "../src/telemetry/logger";
+import wranglerConfig from "../wrangler.jsonc?raw";
 
 const job: QuestionJob = {
   webhookEventId: "already-complete", replyToken: "reply", groupId: "group", userId: null,
@@ -16,6 +17,15 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+it("enables production logs and sampled traces", () => {
+  const config = JSON.parse(wranglerConfig);
+  expect(config.observability).toEqual({
+    enabled: true,
+    logs: { enabled: true, head_sampling_rate: 1 },
+    traces: { enabled: true, head_sampling_rate: 0.1 },
+  });
+});
 
 describe("createWorker repository injection", () => {
   it("uses the injected repository in the queue consumer", async () => {

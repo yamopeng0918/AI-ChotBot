@@ -3,6 +3,20 @@
   "name": "line-running-community-bot",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-17",
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  },
+  "secrets": {
+    "required": [
+      "LINE_CHANNEL_SECRET",
+      "LINE_CHANNEL_ACCESS_TOKEN",
+      "LINE_GROUP_ID",
+      "ANALYTICS_HASH_KEY",
+      "GROUP_ADMINS_BOOTSTRAP_JSON"
+    ]
+  },
   "ai": { "binding": "AI" },
   "d1_databases": [{ "binding": "DB", "database_name": "line-bot-diagnostics", "database_id": "37554743-813d-4817-8a6f-e315e2408b0a", "migrations_dir": "migrations" }],
   "triggers": { "crons": ["17 19 * * *"] },

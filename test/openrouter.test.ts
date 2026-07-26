@@ -80,18 +80,34 @@ describe("WorkersAiAnswerService", () => {
   });
 
   it("falls back to the secondary model when the primary model is rate limited", async () => {
+    let now = 0;
+    const observations: unknown[] = [];
     const ai = {
       run: vi
         .fn()
-        .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
-        .mockResolvedValueOnce({ response: "  fallback answer  " }),
+        .mockImplementationOnce(async () => {
+          now = 10;
+          throw Object.assign(new Error("rate limited"), { status: 429 });
+        })
+        .mockImplementationOnce(async () => {
+          now = 30;
+          return { response: "  fallback answer  " };
+        }),
     };
 
     await expect(
-      new WorkersAiAnswerService(ai as never, "@cf/meta/llama-3.2-3b-instruct", "@cf/meta/llama-3.2-1b-instruct").answer({
-        question: "question",
-        locale: "zh-TW",
-      }),
+      new WorkersAiAnswerService(
+        ai as never,
+        "@cf/meta/llama-3.2-3b-instruct",
+        "@cf/meta/llama-3.2-1b-instruct",
+        () => now,
+      ).answer(
+        {
+          question: "question",
+          locale: "zh-TW",
+        },
+        (event) => observations.push(event),
+      ),
     ).resolves.toEqual({
       text: "fallback answer",
       model: "@cf/meta/llama-3.2-1b-instruct",
@@ -102,6 +118,61 @@ describe("WorkersAiAnswerService", () => {
     expect(ai.run).toHaveBeenCalledTimes(2);
     expect(ai.run.mock.calls[0]![0]).toBe("@cf/meta/llama-3.2-3b-instruct");
     expect(ai.run.mock.calls[1]![0]).toBe("@cf/meta/llama-3.2-1b-instruct");
+    expect(observations).toEqual([
+      {
+        type: "attempt.started",
+        provider: "workers_ai",
+        role: "primary",
+        model: "@cf/meta/llama-3.2-3b-instruct",
+      },
+      {
+        type: "attempt.failed",
+        provider: "workers_ai",
+        role: "primary",
+        model: "@cf/meta/llama-3.2-3b-instruct",
+        reason: "rate_limited",
+        durationMs: 10,
+      },
+      {
+        type: "fallback.started",
+        provider: "workers_ai",
+        role: "fallback",
+        model: "@cf/meta/llama-3.2-1b-instruct",
+        reason: "rate_limited",
+      },
+      {
+        type: "attempt.started",
+        provider: "workers_ai",
+        role: "fallback",
+        model: "@cf/meta/llama-3.2-1b-instruct",
+      },
+      {
+        type: "attempt.completed",
+        provider: "workers_ai",
+        role: "fallback",
+        model: "@cf/meta/llama-3.2-1b-instruct",
+        durationMs: 20,
+      },
+    ]);
+  });
+
+  it("preserves provider behavior when the safe observer throws", async () => {
+    const ai = {
+      run: vi.fn().mockResolvedValue({ response: "safe answer" }),
+    };
+    const service = new WorkersAiAnswerService(ai as never);
+
+    await expect(
+      service.answer(
+        { question: "question", locale: "zh-TW" },
+        () => {
+          throw new Error("observer unavailable");
+        },
+      ),
+    ).resolves.toMatchObject({
+      text: "safe answer",
+      model: "@cf/meta/llama-3.2-3b-instruct",
+    });
   });
 
   it("falls back to the secondary model when the primary model returns provider_error", async () => {

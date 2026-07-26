@@ -149,8 +149,11 @@ describe("signed LINE webhook to completed reply", () => {
     expect(correlated.map((entry) => entry.event)).toEqual([
       "webhook.enqueue.completed",
       "question.started",
+      "storage.claim.completed",
       "answer.completed",
+      "storage.prepare.completed",
       "line.reply.completed",
+      "storage.complete.completed",
       "question.completed",
     ]);
     expect(correlated.at(-1)).toMatchObject({
@@ -174,7 +177,7 @@ describe("signed LINE webhook to completed reply", () => {
   });
 
   it("does not create a second visible reply for a duplicate webhookEventId", async () => {
-    const { worker, env, answerService } = fixture();
+    const { worker, env, answerService, events } = fixture();
     await deliver(worker, env, event());
     await deliver(worker, env, event());
     expect(jobs).toHaveLength(2);
@@ -183,5 +186,10 @@ describe("signed LINE webhook to completed reply", () => {
     expect(answerService.answer).toHaveBeenCalledOnce();
     expect(lineCalls).toHaveLength(1);
     expect((await db.prepare("SELECT COUNT(*) AS count FROM questions").first<{ count: number }>())?.count).toBe(1);
+    expect(events.slice(-3).map((entry) => entry.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "question.deduplicated",
+    ]);
   });
 });

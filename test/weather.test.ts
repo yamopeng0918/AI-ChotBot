@@ -125,6 +125,73 @@ describe("OpenMeteoWeatherService", () => {
     expect(cache.set).toHaveBeenCalledTimes(1);
   });
 
+  it("classifies cache-read storage failures without exposing the database error", async () => {
+    const cache = {
+      get: vi.fn().mockRejectedValue(new Error("D1 cache read credentials=private")),
+      set: vi.fn(),
+    };
+    const service = new OpenMeteoWeatherService(vi.fn(), cache as never);
+
+    const error = await service
+      .answer({ question: "Taipei weather", locale: "zh-TW" })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      name: "WeatherStorageError",
+      operation: "cache_read",
+      message: "weather cache unavailable",
+    });
+    expect(String(error)).not.toContain("credentials=private");
+  });
+
+  it("classifies cache-write storage failures without exposing the database error", async () => {
+    const cache = {
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockRejectedValue(new Error("D1 cache write credentials=private")),
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("geocoding-api.open-meteo.com")) {
+        return jsonResponse({
+          results: [{
+            name: "Taipei",
+            country: "Taiwan",
+            latitude: 25.033,
+            longitude: 121.5654,
+            timezone: "Asia/Taipei",
+          }],
+        });
+      }
+      return jsonResponse({
+        current: {
+          temperature_2m: 31.2,
+          weather_code: 1,
+          wind_speed_10m: 12.3,
+          precipitation: 0,
+        },
+        daily: {
+          time: ["2026-07-25"],
+          temperature_2m_max: [32],
+          temperature_2m_min: [26],
+          precipitation_sum: [0],
+          weather_code: [1],
+        },
+      });
+    });
+    const service = new OpenMeteoWeatherService(fetcher, cache as never);
+
+    const error = await service
+      .answer({ question: "Taipei weather", locale: "zh-TW" })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      name: "WeatherStorageError",
+      operation: "cache_write",
+      message: "weather cache unavailable",
+    });
+    expect(String(error)).not.toContain("credentials=private");
+  });
+
   it("asks for a city when the prompt lacks one", async () => {
     const service = new OpenMeteoWeatherService(vi.fn());
     await expect(service.answer({ question: "天氣怎麼樣？", locale: "zh-TW" })).resolves.toMatchObject({

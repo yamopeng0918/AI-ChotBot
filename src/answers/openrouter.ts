@@ -1,7 +1,14 @@
 import { buildSystemPrompt } from "./prompt";
-import type { AnswerRequest, AnswerResult, AnswerService } from "./types";
+import type {
+  AnswerProviderFailureReason,
+  AnswerProviderObserver,
+  AnswerProviderRole,
+  AnswerRequest,
+  AnswerResult,
+  AnswerService,
+} from "./types";
 
-export type AnswerUnavailableReason = "rate_limited" | "provider_error" | "timeout";
+export type AnswerUnavailableReason = AnswerProviderFailureReason;
 
 export class AnswerUnavailableError extends Error {
   readonly reason: AnswerUnavailableReason;
@@ -57,11 +64,44 @@ const FALLBACK_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const REQUEST_TIMEOUT_MS = 20_000;
 
 export class WorkersAiAnswerService implements AnswerService {
-  constructor(private readonly ai: AiBinding, private readonly model = PRIMARY_MODEL, private readonly fallbackModel = FALLBACK_MODEL) {}
+  constructor(
+    private readonly ai: AiBinding,
+    private readonly model = PRIMARY_MODEL,
+    private readonly fallbackModel = FALLBACK_MODEL,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
 
-  private async attempt(model: string, request: AnswerRequest): Promise<AnswerResult> {
+  private timestamp(): number {
+    try {
+      return this.now();
+    } catch {
+      return Date.now();
+    }
+  }
+
+  private notify(observe: AnswerProviderObserver | undefined, event: Parameters<AnswerProviderObserver>[0]): void {
+    try {
+      observe?.(event);
+    } catch {
+      // Observability must never change provider behavior.
+    }
+  }
+
+  private async attempt(
+    model: string,
+    role: AnswerProviderRole,
+    request: AnswerRequest,
+    observe?: AnswerProviderObserver,
+  ): Promise<AnswerResult> {
+    const startedAt = this.timestamp();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    this.notify(observe, {
+      type: "attempt.started",
+      provider: "workers_ai",
+      role,
+      model,
+    });
 
     try {
       const payload = (await this.ai.run(
@@ -83,48 +123,73 @@ export class WorkersAiAnswerService implements AnswerService {
       }
 
       const usage = typeof payload === "object" && payload !== null ? payload.usage : undefined;
-      return {
+      const result = {
         text,
         model,
         inputTokens: tokenCount(usage?.prompt_tokens ?? null),
         outputTokens: tokenCount(usage?.completion_tokens ?? null),
       };
+      this.notify(observe, {
+        type: "attempt.completed",
+        provider: "workers_ai",
+        role,
+        model,
+        durationMs: Math.max(0, this.timestamp() - startedAt),
+      });
+      return result;
     } catch (error) {
-      if (error instanceof AnswerUnavailableError) {
-        throw error;
-      }
-      if (errorStatus(error) === 429) {
-        throw new AnswerUnavailableError("rate_limited");
-      }
-      if (controller.signal.aborted) {
-        throw new AnswerUnavailableError("timeout");
-      }
-      throw new AnswerUnavailableError("provider_error");
+      const classified =
+        error instanceof AnswerUnavailableError
+          ? error
+          : errorStatus(error) === 429
+            ? new AnswerUnavailableError("rate_limited")
+            : controller.signal.aborted
+              ? new AnswerUnavailableError("timeout")
+              : new AnswerUnavailableError("provider_error");
+      this.notify(observe, {
+        type: "attempt.failed",
+        provider: "workers_ai",
+        role,
+        model,
+        reason: classified.reason,
+        durationMs: Math.max(0, this.timestamp() - startedAt),
+      });
+      throw classified;
     } finally {
       clearTimeout(timeout);
     }
   }
 
-  async answer(request: AnswerRequest): Promise<AnswerResult> {
+  async answer(request: AnswerRequest, observe?: AnswerProviderObserver): Promise<AnswerResult> {
     if (!this.fallbackModel || this.fallbackModel === this.model) {
-      return this.attempt(this.model, request);
+      return this.attempt(this.model, "primary", request, observe);
     }
 
     let sawRateLimited = false;
+    let primaryFailure: AnswerUnavailableReason = "provider_error";
 
     try {
-      return await this.attempt(this.model, request);
+      return await this.attempt(this.model, "primary", request, observe);
     } catch (error) {
       if (!(error instanceof AnswerUnavailableError)) {
         throw error;
       }
+      primaryFailure = error.reason;
       if (error.reason === "rate_limited") {
         sawRateLimited = true;
       }
     }
 
+    this.notify(observe, {
+      type: "fallback.started",
+      provider: "workers_ai",
+      role: "fallback",
+      model: this.fallbackModel,
+      reason: primaryFailure,
+    });
+
     try {
-      return await this.attempt(this.fallbackModel, request);
+      return await this.attempt(this.fallbackModel, "fallback", request, observe);
     } catch (error) {
       if (!(error instanceof AnswerUnavailableError)) {
         throw error;

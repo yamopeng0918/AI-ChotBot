@@ -4,10 +4,21 @@ import { processQuestion } from "../src/jobs/process-message";
 import worker from "../src/index";
 import { LineReplyError } from "../src/line/client";
 import type { TelemetryEvent, TelemetryLogger } from "../src/telemetry/logger";
-import { AnswerUnavailableError } from "../src/answers/openrouter";
+import { AnswerUnavailableError, WorkersAiAnswerService } from "../src/answers/openrouter";
+import { WeatherStorageError } from "../src/weather/openmeteo";
 const job: QuestionJob = { webhookEventId: "event-1", replyToken: "reply-1", groupId: "group-1", userId: "user-1", messageId: "message-1", text: "Where should I run?", timestamp: 1, receivedAt: "2026-07-18T00:00:00.000Z" };
 const claimed = { state: "claimed", leaseToken: "lease-a", leaseUntil: "2026-07-18T00:01:00.000Z", createdAt: job.receivedAt, expiresAt: "2026-08-17T00:00:00.000Z" };
 function deps(claim: unknown = claimed) { return { now: () => new Date("2026-07-18T00:00:00.000Z"), answerService: { answer: vi.fn().mockResolvedValue({ text: "Try the riverside.", model: "model" }) }, lineClient: { reply: vi.fn().mockResolvedValue(undefined), push: vi.fn().mockResolvedValue(undefined) }, questions: { claim: vi.fn().mockResolvedValue(claim), prepare: vi.fn().mockResolvedValue(undefined), complete: vi.fn().mockResolvedValue(undefined), release: vi.fn().mockResolvedValue(undefined) }, pseudonymize: vi.fn().mockResolvedValue("user-key") }; }
+function observed<T extends object = ReturnType<typeof deps>>(base: T = deps() as T) {
+  const events: TelemetryEvent[] = [];
+  return {
+    events,
+    dependencies: {
+      ...base,
+      logger: { emit: (event: TelemetryEvent) => events.push(event) },
+    },
+  };
+}
 describe("processQuestion", () => {
   it("emits the successful processing sequence", async () => {
     const events: TelemetryEvent[] = [];
@@ -18,8 +29,11 @@ describe("processQuestion", () => {
 
     expect(events.map((event) => event.event)).toEqual([
       "question.started",
+      "storage.claim.completed",
       "answer.completed",
+      "storage.prepare.completed",
       "line.reply.completed",
+      "storage.complete.completed",
       "question.completed",
     ]);
     expect(events.at(-1)).toMatchObject({
@@ -32,10 +46,20 @@ describe("processQuestion", () => {
   it("emits classified claim failure retry events", async () => {
     const events: TelemetryEvent[] = [];
     const d = { ...deps(), logger: { emit: (event: TelemetryEvent) => events.push(event) } };
-    d.questions.claim.mockRejectedValueOnce(new Error("database unavailable"));
+    d.questions.claim.mockRejectedValueOnce(new Error("database unavailable secret"));
 
     await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 1 });
 
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.failed",
+      "question.retry",
+    ]);
+    expect(events.at(-2)).toMatchObject({
+      stage: "storage",
+      outcome: "failed",
+      errorType: "lease_unavailable",
+    });
     expect(events.at(-1)).toMatchObject({
       event: "question.retry",
       stage: "storage",
@@ -43,6 +67,7 @@ describe("processQuestion", () => {
       errorType: "lease_unavailable",
       retryDelaySeconds: 1,
     });
+    expect(JSON.stringify(events)).not.toContain("database unavailable secret");
   });
   it("emits classified busy claim retry events", async () => {
     const events: TelemetryEvent[] = [];
@@ -53,6 +78,11 @@ describe("processQuestion", () => {
 
     await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 45 });
 
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "question.retry",
+    ]);
     expect(events.at(-1)).toMatchObject({
       event: "question.retry",
       stage: "storage",
@@ -128,6 +158,13 @@ describe("processQuestion", () => {
         outcome: "failed",
       }),
     ]));
+    expect(events.at(-1)).toMatchObject({
+      event: "question.retry",
+      stage: "queue",
+      outcome: "retry",
+      errorType: "line_push_failed",
+      retryDelaySeconds: 1,
+    });
   });
   it("emits classified completion failure retry events", async () => {
     const events: TelemetryEvent[] = [];
@@ -136,6 +173,12 @@ describe("processQuestion", () => {
 
     await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "retry", delaySeconds: 1 });
 
+    expect(events.at(-2)).toMatchObject({
+      event: "storage.complete.failed",
+      stage: "storage",
+      outcome: "failed",
+      errorType: "storage_unavailable",
+    });
     expect(events.at(-1)).toMatchObject({
       event: "question.retry",
       stage: "storage",
@@ -213,6 +256,268 @@ describe("processQuestion", () => {
         retryDelaySeconds: 1,
       }),
     ]));
+  });
+
+  it("records ordered storage successes and provider duration", async () => {
+    let current = new Date("2026-07-18T00:00:00.000Z");
+    const base = deps();
+    base.now = () => current;
+    base.answerService.answer.mockImplementationOnce(async () => {
+      current = new Date("2026-07-18T00:00:00.040Z");
+      return { text: "safe answer", model: "model" };
+    });
+    const { dependencies, events } = observed(base);
+
+    await expect(processQuestion(job, dependencies)).resolves.toEqual({
+      disposition: "ack",
+      status: "answered",
+    });
+
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "answer.completed",
+      "storage.prepare.completed",
+      "line.reply.completed",
+      "storage.complete.completed",
+      "question.completed",
+    ]);
+    expect(events.find((event) => event.event === "answer.completed")).toMatchObject({
+      durationMs: 40,
+      webhookEventId: job.webhookEventId,
+    });
+  });
+
+  it("emits the exact AI primary-to-fallback sequence and safe reason", async () => {
+    let current = new Date("2026-07-18T00:00:00.000Z");
+    const ai = {
+      run: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          current = new Date("2026-07-18T00:00:00.010Z");
+          throw Object.assign(new Error("provider body is private"), { status: 429 });
+        })
+        .mockImplementationOnce(async () => {
+          current = new Date("2026-07-18T00:00:00.030Z");
+          return { response: "safe fallback" };
+        }),
+    };
+    const events: TelemetryEvent[] = [];
+    const dependencies = {
+      ...deps(),
+      now: () => current,
+      answerService: new WorkersAiAnswerService(
+        ai as never,
+        "primary-model",
+        "fallback-model",
+        () => current.getTime(),
+      ),
+      logger: { emit: (event: TelemetryEvent) => events.push(event) },
+    };
+
+    await expect(processQuestion(job, dependencies)).resolves.toEqual({
+      disposition: "ack",
+      status: "answered",
+    });
+
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "answer.ai.attempt.started",
+      "answer.ai.attempt.failed",
+      "answer.ai.fallback.started",
+      "answer.ai.attempt.started",
+      "answer.ai.attempt.completed",
+      "answer.completed",
+      "storage.prepare.completed",
+      "line.reply.completed",
+      "storage.complete.completed",
+      "question.completed",
+    ]);
+    expect(events[3]).toMatchObject({
+      outcome: "failed",
+      detail: "primary_model",
+      model: "primary-model",
+      errorType: "ai_rate_limited",
+      durationMs: 10,
+    });
+    expect(events[4]).toMatchObject({
+      outcome: "fallback",
+      detail: "fallback_model",
+      model: "fallback-model",
+      errorType: "ai_rate_limited",
+    });
+    expect(events[6]).toMatchObject({
+      outcome: "success",
+      detail: "fallback_model",
+      model: "fallback-model",
+      durationMs: 20,
+    });
+    expect(events[7]).toMatchObject({
+      model: "fallback-model",
+      durationMs: 30,
+    });
+    expect(JSON.stringify(events)).not.toContain("provider body is private");
+  });
+
+  it("ends a prepare and release failure path with one classified retry", async () => {
+    const { dependencies, events } = observed();
+    dependencies.questions.prepare.mockRejectedValueOnce(new Error("prepare secret"));
+    dependencies.questions.release.mockRejectedValueOnce(new Error("release secret"));
+
+    await expect(processQuestion(job, dependencies)).resolves.toEqual({
+      disposition: "retry",
+      delaySeconds: 1,
+    });
+
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "answer.completed",
+      "storage.prepare.failed",
+      "storage.release.failed",
+      "question.retry",
+    ]);
+    expect(events.at(-2)).toMatchObject({
+      stage: "storage",
+      outcome: "failed",
+      errorType: "storage_unavailable",
+    });
+    expect(events.at(-1)).toMatchObject({
+      outcome: "retry",
+      retryDelaySeconds: 1,
+      errorType: "storage_unavailable",
+    });
+    expect(JSON.stringify(events)).not.toContain("prepare secret");
+    expect(JSON.stringify(events)).not.toContain("release secret");
+  });
+
+  it("classifies a weather settings storage failure before retrying", async () => {
+    const { dependencies, events } = observed({
+      ...deps(),
+      weatherService: {
+        answer: vi.fn().mockResolvedValue({ text: "safe weather", model: "open-meteo" }),
+      },
+      groupSettings: {
+        getWeatherCity: vi.fn().mockRejectedValue(new Error("settings database secret")),
+      },
+    });
+    const weatherJob = { ...job, text: "Taipei weather" };
+
+    await expect(processQuestion(weatherJob, dependencies)).resolves.toEqual({
+      disposition: "retry",
+      delaySeconds: 1,
+    });
+
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "weather.settings.failed",
+      "question.retry",
+    ]);
+    expect(events.at(-2)).toMatchObject({
+      stage: "storage",
+      outcome: "failed",
+      errorType: "storage_unavailable",
+      detail: "weather_settings",
+    });
+    expect(JSON.stringify(events)).not.toContain("settings database secret");
+  });
+
+  it.each([
+    ["weather_timeout", () => new DOMException("private timeout", "AbortError")],
+    ["weather_provider_error", () => new Error("private provider response")],
+  ] as const)("classifies %s separately from storage failures", async (errorType, makeError) => {
+    let current = new Date("2026-07-18T00:00:00.000Z");
+    const { dependencies, events } = observed({
+      ...deps(),
+      now: () => current,
+      weatherService: {
+        answer: vi.fn().mockImplementationOnce(async () => {
+          current = new Date("2026-07-18T00:00:00.025Z");
+          throw makeError();
+        }),
+      },
+    });
+    const weatherJob = { ...job, text: "Taipei weather" };
+
+    await expect(processQuestion(weatherJob, dependencies)).resolves.toEqual({
+      disposition: "ack",
+      status: "provider_unavailable",
+    });
+
+    expect(events.find((event) => event.event === "answer.failed")).toMatchObject({
+      stage: "answer",
+      outcome: "fallback",
+      errorType,
+      durationMs: 25,
+    });
+    expect(JSON.stringify(events)).not.toContain("private");
+  });
+
+  it("classifies weather cache storage failures without calling them provider failures", async () => {
+    const { dependencies, events } = observed({
+      ...deps(),
+      weatherService: {
+        answer: vi.fn().mockRejectedValue(new WeatherStorageError("cache_read")),
+      },
+    });
+    const weatherJob = { ...job, text: "Taipei weather" };
+
+    await expect(processQuestion(weatherJob, dependencies)).resolves.toEqual({
+      disposition: "ack",
+      status: "provider_unavailable",
+    });
+
+    expect(events.find((event) => event.event === "answer.failed")).toMatchObject({
+      stage: "storage",
+      outcome: "fallback",
+      errorType: "storage_unavailable",
+      detail: "weather_cache_read",
+    });
+    expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ errorType: "weather_provider_error" }),
+    ]));
+  });
+
+  it("emits prepared-answer reuse instead of another provider terminal event", async () => {
+    const { dependencies, events } = observed(deps({
+      ...claimed,
+      leaseToken: "lease-b",
+      prepared: { text: "saved", model: "saved-model", status: "answered" },
+    }));
+
+    await expect(processQuestion(job, dependencies)).resolves.toEqual({
+      disposition: "ack",
+      status: "answered",
+    });
+
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "answer.prepared.reused",
+      "line.reply.completed",
+      "storage.complete.completed",
+      "question.completed",
+    ]);
+    expect(events[2]).toMatchObject({ detail: "reused_prepared" });
+  });
+
+  it("emits a dedicated completed-duplicate outcome without inventing stored status", async () => {
+    const { dependencies, events } = observed(deps({ state: "completed" }));
+
+    await expect(processQuestion(job, dependencies)).resolves.toEqual({ disposition: "ack" });
+
+    expect(events.map((event) => event.event)).toEqual([
+      "question.started",
+      "storage.claim.completed",
+      "question.deduplicated",
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      stage: "queue",
+      outcome: "success",
+      webhookEventId: job.webhookEventId,
+    });
   });
   it("claims with a 60-second lease and prepares before LINE delivery", async () => { const d = deps(); await expect(processQuestion(job, d)).resolves.toEqual({ disposition: "ack", status: "answered" }); expect(d.questions.claim).toHaveBeenCalledWith("event-1", "2026-07-18T00:01:00.000Z", job.receivedAt); expect(d.questions.prepare).toHaveBeenCalledWith(expect.anything(), "answered", "lease-a"); expect(d.questions.prepare.mock.invocationCallOrder[0]!).toBeLessThan(d.lineClient.reply.mock.invocationCallOrder[0]!); });
   it("routes weather questions to the weather service and records a metric", async () => {

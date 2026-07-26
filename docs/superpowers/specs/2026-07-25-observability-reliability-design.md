@@ -2,34 +2,56 @@
 
 ## Status
 
-Approved for specification on 2026-07-25. This document defines the first reliability-focused optimization phase for the LINE running-community bot.
+Approved for specification on 2026-07-25 and amended on 2026-07-26 after the
+final privacy and operability review. This document defines the first
+reliability-focused optimization phase for the LINE running-community bot.
+
+The amendment keeps Workers Logs at full sampling and explicitly defers
+Cloudflare Traces. It also makes structured field indexing, correlation,
+transition semantics, deployment gates, and Version-ID rollback normative.
 
 ## Goal
 
-Make production failures easy to locate and explain from the Cloudflare Dashboard while preserving user privacy and keeping operations simple.
+Make production failures easy to locate and explain from the Cloudflare
+Dashboard while preserving user privacy and keeping operations simple.
 
-The phase succeeds when an operator can use one `webhookEventId` to determine:
+The phase succeeds when an operator can use one correlation identifier to
+determine:
 
 - which processing stage an event reached;
-- why it fell back, retried, or failed;
-- whether the final LINE delivery succeeded; and
-- how long the important stages took.
+- why it fell back, retried, deduplicated, or failed;
+- whether final LINE delivery succeeded;
+- whether required storage transitions completed; and
+- how long provider, terminal question, and scheduled cleanup work took.
 
-No log may expose message text, LINE user IDs, access tokens, channel secrets, analytics keys, or complete third-party response bodies.
+A parsed LINE event uses its `webhookEventId`. A request rejected before a
+trusted LINE event identifier is available, and a scheduled cleanup operation,
+uses an `operationId`.
+
+No normal log may expose message or answer text, LINE user or group IDs, reply
+tokens, access tokens, channel secrets, analytics keys, authorization headers,
+arbitrary error objects, or complete provider responses.
 
 ## Scope
 
 ### Included
 
-- Enable Cloudflare Workers Logs and Traces.
-- Add structured, privacy-safe events across webhook, queue, answer, LINE delivery, storage, and cron paths.
+- Enable Cloudflare Workers Logs at a `1.0` head sampling rate.
+- Explicitly disable Cloudflare Traces for phase one.
+- Add structured, privacy-safe events across webhook, synchronous admin,
+  queue, answer, LINE delivery, storage, and cron paths.
 - Preserve D1 metrics for longer-term operational trends.
 - Generate Worker binding types from Wrangler configuration.
-- Add automated verification for the logging contract and failure paths.
-- Document Dashboard queries, manual inspection thresholds, deployment gates, smoke checks, and rollback.
+- Add automated verification for field indexing, correlation, privacy,
+  transitions, durations, and final event sequences.
+- Document exact Query Builder filters, manual inspection thresholds, privacy
+  auditing, deployment gates, migration handling, smoke checks, Version ID
+  recording, and rollback.
 
 ### Excluded
 
+- A proxy Worker or another trace workaround in phase one.
+- Cloudflare Traces until a privacy-safe external-request boundary exists.
 - Proactive email, chat, or pager alerts.
 - A third-party observability platform.
 - A custom operations dashboard.
@@ -37,27 +59,50 @@ No log may expose message text, LINE user IDs, access tokens, channel secrets, a
 - Gradual production rollout.
 - New end-user or running-community features.
 
-These exclusions keep the first phase focused on diagnosis and safe operation. They may be reconsidered after production baselines are available.
+These exclusions keep the phase focused on safe diagnosis and operation. They
+may be reconsidered after production baselines and a trace-specific privacy
+design are available.
 
-## Observability Architecture
+## Observability architecture
 
-### Correlation
+### Correlation invariant
 
-Use the existing LINE `webhookEventId` as the correlation identifier for every event-specific log and metric. It must flow through webhook acceptance, queue processing, intent selection, provider calls, LINE delivery, and persistence.
+Every telemetry event contains exactly one correlation field:
 
-Events that do not originate from a LINE webhook, such as scheduled cleanup, use a generated operation identifier. The identifier must be created with `crypto.randomUUID()`.
+```ts
+type TelemetryCorrelation =
+  | { webhookEventId: string; operationId?: never }
+  | { operationId: string; webhookEventId?: never };
+```
 
-### Structured event contract
+The identifier rules are:
 
-Introduce one logger boundary that emits JSON objects. Every event contains:
+- parsed LINE events use the existing `webhookEventId`;
+- `webhook.enqueue.failed` retains the current job's `webhookEventId`;
+- missing/invalid signatures and invalid JSON use a request `operationId`;
+- synchronous admin events use the LINE event ID when present and otherwise a
+  generated operation identifier;
+- scheduled cleanup uses one `crypto.randomUUID()` operation identifier for its
+  start and terminal events.
 
-- `event`: stable machine-queryable event name;
-- `stage`: one of `webhook`, `queue`, `answer`, `line`, `storage`, or `cron`;
-- `outcome`: one of `success`, `retry`, `fallback`, or `failed`;
-- `webhookEventId` or `operationId`;
+No event may omit both identifiers or carry both.
+
+### Canonical event contract
+
+One telemetry module owns the canonical event-name catalog, stages, outcomes,
+error classifications, detail vocabulary, correlation union, allowlisted
+projection, and console sink. `event` is a closed union derived from the
+catalog, not an arbitrary string.
+
+Every event contains:
+
+- `event`;
+- `stage`: `webhook`, `queue`, `answer`, `line`, `storage`, or `cron`;
+- `outcome`: `success`, `retry`, `fallback`, or `failed`;
+- exactly one correlation identifier;
 - `timestamp`.
 
-Optional fields are included only when relevant:
+Optional fields appear only when relevant:
 
 - `intent`;
 - `model`;
@@ -66,23 +111,112 @@ Optional fields are included only when relevant:
 - `errorType`;
 - `detail`.
 
-`errorType` and `detail` must use an allowlisted vocabulary. They must not contain raw exception messages from external providers because those messages may contain request data.
+The canonical event names are:
+
+- `webhook.rejected`;
+- `webhook.enqueue.completed`;
+- `webhook.enqueue.failed`;
+- `admin.reply.completed`;
+- `admin.reply.failed`;
+- `question.started`;
+- `question.deduplicated`;
+- `question.retry`;
+- `question.completed`;
+- `storage.claim.completed`;
+- `storage.claim.failed`;
+- `storage.prepare.completed`;
+- `storage.prepare.failed`;
+- `storage.complete.completed`;
+- `storage.complete.failed`;
+- `storage.release.failed`;
+- `answer.ai.attempt.started`;
+- `answer.ai.attempt.completed`;
+- `answer.ai.attempt.failed`;
+- `answer.ai.fallback.started`;
+- `answer.prepared.reused`;
+- `answer.completed`;
+- `answer.failed`;
+- `weather.settings.failed`;
+- `line.reply.completed`;
+- `line.reply.failed`;
+- `line.push.completed`;
+- `line.push.failed`;
+- `queue.message.retry`;
+- `cron.cleanup.started`;
+- `cron.cleanup.completed`;
+- `cron.cleanup.failed`.
+
+### Structured production sink
+
+The logger constructs a new plain object from an explicit allowlist and passes
+that object directly to `console.log`. It does not stringify the record first.
+This allows Workers Logs to extract and index custom fields such as `event`,
+`webhookEventId`, `stage`, and `errorType`.
+
+The injected writer used by tests has the same object contract as production:
+
+```ts
+write: (record: TelemetryRecord) => void
+```
+
+Projection failures and writer failures are swallowed at the telemetry
+boundary. Observability must never change request, queue, LINE, storage, or
+cron behavior.
 
 ### Privacy rules
 
-The logger interface must not accept the question, answer, LINE user ID, reply token, group ID, authorization headers, secrets, or arbitrary error objects.
+The telemetry type and serializer do not accept:
 
-Tests must fail if forbidden field names are added to the structured event type or serializer. The discovery-mode group ID log remains a temporary operator workflow and must be explicitly documented; normal production events do not log group IDs.
+- `question`;
+- `answer`;
+- `userId`;
+- `groupId`;
+- `replyToken`;
+- `authorization`;
+- `accessToken`;
+- `secret`;
+- `error`.
 
-### Cloudflare configuration
+A compile-time assertion fails if any forbidden key is added to the event
+union. Runtime tests also add forbidden properties after type checking and
+verify that the allowlisted projection omits them.
 
-Configure Workers Logs at a `1.0` head sampling rate and Traces at `0.1` for the initial baseline period.
+`errorType` and `detail` use closed vocabularies. Raw caught errors and provider
+messages never cross the logger boundary.
 
-The sampling values are explicit in `wrangler.jsonc`. After enough traffic has been observed, operators may lower them based on volume and cost without changing the structured event contract.
+The `LINE_GROUP_ID=__DISCOVER__` setup workflow remains the sole temporary
+group-ID exception and is not a structured telemetry event. Operators must
+disable it immediately after discovery.
 
-### D1 metrics boundary
+## Cloudflare configuration and trace privacy
 
-D1 metrics remain the source for longer-term aggregates such as:
+`wrangler.jsonc` explicitly configures:
+
+```jsonc
+"observability": {
+  "enabled": true,
+  "logs": { "enabled": true, "head_sampling_rate": 1 },
+  "traces": { "enabled": false }
+}
+```
+
+Traces are disabled because Cloudflare automatically instruments external
+`fetch` calls and may record `url.full` and `url.query`. Open-Meteo receives a
+user-derived city in its URL query. Sampling traces at any non-zero rate would
+therefore violate the normal-log privacy boundary.
+
+Trace enablement is a future design decision. It requires a reviewed
+external-request boundary that prevents user-derived values from appearing in
+trace-visible URL attributes, plus a production privacy smoke. A proxy Worker
+is explicitly outside this phase.
+
+The configuration test must parse JSONC with Wrangler's comment-tolerant
+configuration reader and assert the complete observability object. It must not
+use a parser that rejects valid JSONC comments.
+
+## D1 metrics boundary
+
+D1 metrics remain the source for longer-term aggregates:
 
 - answered and unavailable rates;
 - reply and push fallback outcomes;
@@ -90,47 +224,141 @@ D1 metrics remain the source for longer-term aggregates such as:
 - model distribution;
 - end-to-end duration.
 
-Workers Logs and Traces diagnose individual executions. D1 metrics show operational trends. The implementation must not copy message content into either system.
+Workers Logs diagnose individual executions. D1 metrics show trends. Neither
+system receives message content through the telemetry implementation.
 
-## Event Flow
+## Event flows
 
-### Webhook
+### Webhook and synchronous admin
 
-1. Receive request.
-2. Validate the LINE signature.
-3. Parse the webhook body.
-4. Route admin commands or eligible mentions.
-5. Enqueue each eligible message.
-6. Emit a completion or classified failure event.
+1. Generate a request `operationId`.
+2. Read and verify the LINE signature without logging it or the request body.
+3. On missing/invalid signature or invalid JSON, emit `webhook.rejected` with
+   the operation identifier and a stable classification.
+4. For each parsed LINE event, use its `webhookEventId` when present.
+5. Route admin commands synchronously. Emit `admin.reply.completed` or
+   `admin.reply.failed`.
+6. Enqueue each eligible mention. Emit `webhook.enqueue.completed` or
+   `webhook.enqueue.failed` with the job's event identifier.
 
-Signature failures and invalid JSON are logged as classifications only. The signature and request body are never logged.
+### Generic queue success
 
-### Queue consumer
+```text
+question.started
+storage.claim.completed
+answer.completed
+storage.prepare.completed
+line.reply.completed
+storage.complete.completed
+question.completed
+```
 
-1. Start processing with `webhookEventId`.
-2. Claim the D1 question lease.
-3. Classify intent and select the answer service.
-4. Call Open-Meteo or Workers AI.
-5. Prepare the answer record.
-6. Attempt LINE reply.
-7. Fall back to LINE push when the reply token is unusable.
-8. Complete or release the D1 record.
-9. Acknowledge or retry the queue message.
+The webhook invocation's preceding `webhook.enqueue.completed` event shares the
+same identifier.
 
-Each fallback or retry emits one event at the decision point. A final completion event records the end-to-end outcome and duration.
+### Workers AI primary and fallback
+
+A primary success emits:
+
+```text
+answer.ai.attempt.started
+answer.ai.attempt.completed
+answer.completed
+```
+
+An AI fallback success emits:
+
+```text
+answer.ai.attempt.started        primary
+answer.ai.attempt.failed         primary
+answer.ai.fallback.started
+answer.ai.attempt.started        fallback
+answer.ai.attempt.completed      fallback
+answer.completed
+```
+
+Attempt terminal events and `answer.completed` include stage duration. Model
+role is represented by `primary_model` or `fallback_model`; raw provider errors
+are not logged.
+
+### Weather
+
+Weather provider timeouts and provider failures remain distinct from D1
+settings/cache failures:
+
+- provider timeout: `weather_timeout`;
+- provider failure: `weather_provider_error`;
+- group settings failure: `weather.settings.failed`,
+  `storage_unavailable`, `weather_settings`;
+- cache read/write failure: `storage_unavailable` with
+  `weather_cache_read` or `weather_cache_write`.
+
+### Prepared and duplicate claims
+
+Prepared-answer reuse emits:
+
+```text
+question.started
+storage.claim.completed
+answer.prepared.reused
+line.reply.completed
+storage.complete.completed
+question.completed
+```
+
+A completed duplicate emits:
+
+```text
+question.started
+storage.claim.completed
+question.deduplicated
+```
+
+It does not claim a new successful completion whose stored outcome is unknown.
+
+### Storage
+
+Successful claim, prepare, and complete transitions emit stable success events.
+Claim, prepare, complete, and release failures emit classified storage events
+without raw errors.
+
+A retry disposition always terminates with `question.retry` and includes
+`retryDelaySeconds`. A best-effort `storage.release.failed` event does not
+replace that terminal retry.
+
+### LINE delivery
+
+Reply success proceeds to storage completion and `question.completed`.
+
+An unusable reply token emits `line.reply.failed` with a fallback outcome,
+then attempts push. Push success emits `line.push.completed` before storage and
+question completion.
+
+If reply and push both fail, the terminal sequence includes:
+
+```text
+line.reply.failed
+line.push.failed
+storage.complete.completed | storage.complete.failed
+question.retry
+```
+
+The retry contains a delay even if recording the `reply_failed` terminal status
+also fails.
 
 ### Scheduled cleanup
 
-1. Generate an `operationId`.
-2. Start expired-record cleanup.
-3. Record completion and duration.
-4. On failure, emit a structured error event and rethrow so Cloudflare records the invocation as failed.
+1. Generate one `operationId` with `crypto.randomUUID()`.
+2. Emit `cron.cleanup.started`.
+3. Purge expired records.
+4. Emit `cron.cleanup.completed` with `durationMs`, or emit
+   `cron.cleanup.failed` with `durationMs` and `cron_cleanup_failed`.
+5. Rethrow a stable error after failure telemetry so Cloudflare records the
+   invocation as failed.
 
-Cron failures must not be silently swallowed.
+## Failure classifications
 
-## Failure Classification
-
-Use stable categories rather than arbitrary provider messages:
+Stable classifications are:
 
 - `invalid_signature`;
 - `invalid_json`;
@@ -147,137 +375,158 @@ Use stable categories rather than arbitrary provider messages:
 - `cron_cleanup_failed`;
 - `unexpected_error`.
 
-The implementation may add a category only when it changes an operator's next diagnostic action.
+A new category is justified only when it changes an operator's next diagnostic
+action.
 
-## Reliability Behavior
+## Reliability behavior
 
 Existing degradation behavior remains:
 
-- Workers AI primary failure may use the configured code-level fallback model.
+- Workers AI primary failure may use the configured fallback model.
 - An unusable LINE reply token may fall back to LINE push.
 - Temporary provider, Queue, or D1 failures use bounded retries.
-- Exhausted queue retries flow to the configured dead-letter queue.
+- Exhausted Queue retries flow to the configured dead-letter queue.
+- Optional D1 metric failure does not fail the primary answer flow.
+- Telemetry projection or writer failure never changes processing.
 
-Logging must not introduce a new failure path. If an optional D1 metric write fails, the primary answer flow continues. Native `console` logging remains synchronous and does not require a separate external request.
+Every `ProcessResult` retry path has an explicit terminal telemetry event with
+the same delay passed to the queue retry operation.
 
-## Binding Type Safety
+## Binding and package type safety
 
-Generate Worker binding declarations with `wrangler types` instead of maintaining a handwritten binding interface.
+Wrangler generates `worker-configuration.d.ts` from `wrangler.jsonc`. The
+checked-in declaration is verified before TypeScript checking, so a binding
+change fails the local/CI gate when configuration and code drift.
 
-The generated declaration is checked into the repository or deterministically generated before type checking. The chosen workflow must make a binding change fail CI or the local verification gate when code and `wrangler.jsonc` disagree.
+Test-only `FETCHER` composition remains separate from production bindings.
+Generated runtime declarations make a direct
+`@cloudflare/workers-types` development dependency unnecessary. The package
+and lockfile are updated through npm.
 
-Test-only dependency overrides remain separate from production bindings.
+The repository requires Node.js 22 or newer because the pinned Wrangler version
+requires it.
 
-## Deployment Safety
+## Deployment safety
 
-The required deployment sequence is:
+The required production sequence is:
 
-1. Install locked dependencies.
-2. Generate or verify Wrangler binding types.
+1. Install locked dependencies with `npm ci`.
+2. Verify Wrangler binding types.
 3. Run the full test suite.
 4. Run TypeScript type checking.
 5. Run `wrangler deploy --dry-run`.
-6. Apply reviewed, backward-compatible D1 migrations.
-7. Deploy the Worker.
-8. Run production health, LINE mention, D1, Queue, and Dashboard smoke checks.
-9. Record the deployment ID.
+6. Review every pending D1 migration and confirm backward compatibility with
+   the currently deployed Worker.
+7. List and apply remote pending D1 migrations.
+8. Record the current known-good Worker Version ID.
+9. Deploy the Worker.
+10. Run production health, LINE, D1, Queue, Dashboard, and privacy smoke checks.
+11. List and record the newly deployed Worker Version ID.
 
-If production checks fail, roll back to the recorded known-good deployment. Worker rollback does not revert D1 migrations or other resource state, so migrations must remain backward compatible with the previous Worker version.
+The checked-in migrations are `0001_questions.sql`,
+`0002_group_admins.sql`, `0003_worker_metrics.sql`, and
+`0004_group_settings_weather_cache.sql`.
 
-Staging and gradual deployment are deferred until the operational baseline shows that their additional resources and configuration are justified.
+Rollback takes a Worker Version ID. It does not revert D1 migrations, D1 data,
+or other external resource state, so schema changes must remain compatible with
+the previous Worker version. Database restoration is a separate reviewed
+operation.
 
-## Dashboard Runbook
+Production smoke remains pending until a real deployment. Local fake endpoints
+cannot satisfy it.
 
-The manual inspection routine covers:
+## Dashboard runbook
 
-### Worker
+The operations runbook defines exact Query Builder filters for:
 
-- invocation outcomes;
-- uncaught exceptions;
-- CPU and wall time;
-- HTTP 5xx responses.
+- `event`;
+- `webhookEventId` or `operationId`;
+- `stage`;
+- `outcome`;
+- `errorType`.
 
-### Logs and Traces
+Operators discover a new `webhookEventId` by filtering for the structured
+`webhook.enqueue.completed` event in a narrow time window, then run a separate
+identifier query. Multiple Query Builder filters use `AND`, so the two
+mutually exclusive identifier fields are never combined.
 
-- search by `webhookEventId`;
-- verify the ordered stage sequence;
-- identify fallback or retry decisions;
-- inspect the final outcome and duration.
-
-### Queue
-
-- backlog count;
-- oldest message age;
-- consumer results;
-- retry and dead-letter outcomes.
-
-### D1 metrics
-
-- answer success rate;
-- provider-unavailable rate;
-- reply and push failure rate;
-- fallback frequency;
-- duration grouped by intent and model.
-
-## Initial Manual Thresholds
-
-The first phase uses operator judgment rather than automatic alerts:
-
-- Investigate when queue backlog keeps growing or the oldest message exceeds two minutes.
-- Investigate repeated `provider_unavailable` or `reply_failed` outcomes in a short period.
-- Investigate when fallback frequency is visibly above the normal daily baseline.
-- Confirm one successful cleanup execution per day.
-- Treat any message content, LINE user ID, group ID, token, or secret in normal logs as a privacy incident.
-
-These are runbook triggers, not automated service-level objectives. Numeric alert thresholds are deferred until real baseline data exists.
+The privacy audit sends a unique harmless weather marker, confirms the
+processing event exists, and requires zero marker occurrences in Logs over the
+full time window. Traces are disabled and are not reported as searched.
 
 ## Testing
 
-### Unit tests
+### Logger and type tests
 
-- Validate the structured event schema.
-- Validate event serialization.
-- Reject forbidden fields.
-- Verify stable failure classifications.
-- Verify duration and identifier handling.
+- Object emission to the injected writer.
+- Independently indexed allowlisted fields.
+- Runtime-added forbidden property omission.
+- Throwing projection/writer isolation.
+- Compile-time forbidden-key rejection.
+- Required and mutually exclusive correlation identifiers.
+- Canonical event-name vocabulary.
+
+### Webhook and boundary tests
+
+- Pre-auth/pre-parse `operationId`.
+- Enqueue failure job correlation.
+- Admin reply success/failure correlation.
+- Unexpected queue retry.
+- Cron success/failure with shared operation identifier and terminal duration.
 
 ### Flow tests
 
-- Workers AI primary-to-fallback sequence.
-- LINE reply-to-push sequence.
-- D1 claim, prepare, complete, and release failures.
-- Queue retry classification.
-- Weather provider failure.
-- Cron success and failure.
-- Final success, retry, and failed event sequences.
+- Generic success in exact order.
+- Workers AI primary success.
+- Workers AI primary-to-fallback success and safe reason.
+- Weather success, timeout, provider failure, settings/cache storage failure.
+- Claim, prepare, complete, and release successes/failures.
+- Prepared-answer reuse.
+- Completed duplicate.
+- Reply-to-push success.
+- Reply-plus-push failure ending in retry with delay.
+- Final success, fallback, retry, and failure sequences.
 
-Tests assert classifications and stage order without asserting raw user content.
+Tests assert classifications, stage order, identifiers, and durations without
+asserting or emitting raw user content.
 
 ### Deployment verification
 
+- Locked install.
 - Full Vitest suite.
 - TypeScript type checking.
-- Wrangler binding type generation or verification.
+- Wrangler binding drift check.
 - Wrangler deployment dry-run.
-- Production smoke checks documented in the runbook.
+- Documentation contradiction/privacy scans.
+- Production smoke recorded as pending until deployment.
 
-## Acceptance Criteria
+## Acceptance criteria
 
-- Workers Logs and Traces are enabled with explicit sampling.
-- All critical webhook, queue, answer, LINE, storage, and cron transitions emit structured events.
-- A single `webhookEventId` reconstructs a processing path in the Dashboard.
-- Logs contain no forbidden user content or credentials.
+- Workers Logs are enabled at `1.0`; Traces are explicitly disabled.
+- The trace privacy reason and future safe-boundary prerequisite are documented.
+- Every telemetry event has exactly one correlation identifier.
+- Production emits allowlisted plain objects, so custom fields are indexed.
+- Critical webhook, admin, queue, answer, LINE, storage, and cron transitions
+  emit canonical events.
+- A single identifier reconstructs the applicable processing path in Query
+  Builder.
+- Every retry disposition ends with a retry event containing its delay.
+- Provider and cron terminals include durations.
+- Logs contain no forbidden content, credentials, or raw errors.
 - D1 metrics continue to provide aggregate trends.
-- Wrangler-generated binding types prevent configuration drift.
-- Failure paths have automated event-sequence coverage.
-- The deployment and rollback runbook is executable by an operator using the repository documentation.
-- Existing tests, type checking, and deployment dry-run pass.
+- Wrangler-generated bindings prevent configuration drift.
+- Failure paths have exact ordered sequence coverage.
+- Deployment, migration, version recording, and rollback instructions are
+  executable and use Worker Version IDs.
+- Automated gates pass; production smoke remains pending until real deployment.
 
-## Deferred Follow-up
+## Deferred follow-up
 
 After baseline data is available, review:
 
-- lower sampling rates based on event volume and cost;
+- a privacy-safe external-request boundary and trace-specific threat model;
+- trace enablement only after production privacy validation;
+- lower Logs sampling based on measured volume and cost;
 - proactive alerts derived from observed failure rates;
 - staging resources;
 - gradual deployments and version-specific smoke tests;

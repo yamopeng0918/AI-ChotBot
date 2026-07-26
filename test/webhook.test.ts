@@ -253,8 +253,10 @@ describe("POST /webhooks/line telemetry", () => {
       event: "webhook.rejected",
       stage: "webhook",
       outcome: "failed",
+      operationId: expect.any(String),
       errorType: "invalid_signature",
     });
+    expect(events.at(-1)).not.toHaveProperty("webhookEventId");
     expect(JSON.stringify(events)).not.toContain("private webhook payload");
   });
 
@@ -274,8 +276,10 @@ describe("POST /webhooks/line telemetry", () => {
       event: "webhook.rejected",
       stage: "webhook",
       outcome: "failed",
+      operationId: expect.any(String),
       errorType: "invalid_signature",
     });
+    expect(events.at(-1)).not.toHaveProperty("webhookEventId");
     expect(JSON.stringify(events)).not.toContain(body);
   });
 
@@ -295,8 +299,10 @@ describe("POST /webhooks/line telemetry", () => {
       event: "webhook.rejected",
       stage: "webhook",
       outcome: "failed",
+      operationId: expect.any(String),
       errorType: "invalid_json",
     });
+    expect(events.at(-1)).not.toHaveProperty("webhookEventId");
   });
 
   it("classifies queue publication failure without recording the provider error", async () => {
@@ -319,8 +325,10 @@ describe("POST /webhooks/line telemetry", () => {
       event: "webhook.enqueue.failed",
       stage: "webhook",
       outcome: "failed",
+      webhookEventId: "event-1",
       errorType: "queue_unavailable",
     });
+    expect(events.at(-1)).not.toHaveProperty("operationId");
     expect(JSON.stringify(events)).not.toContain(queueError.message);
   });
 });

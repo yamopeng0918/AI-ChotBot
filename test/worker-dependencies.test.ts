@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { unstable_readConfig } from "wrangler";
 
 import { createWorker } from "../src/index";
 import type { Env } from "../src/config";
 import type { QuestionJob } from "../src/jobs/types";
 import type { TelemetryEvent } from "../src/telemetry/logger";
-import wranglerConfig from "../wrangler.jsonc?raw";
 
 const job: QuestionJob = {
   webhookEventId: "already-complete", replyToken: "reply", groupId: "group", userId: null,
@@ -18,12 +18,15 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-it("enables production logs and sampled traces", () => {
-  const config = JSON.parse(wranglerConfig);
+it("enables production logs and explicitly disables phase-one traces", () => {
+  const config = unstable_readConfig(
+    { config: "wrangler.jsonc" },
+    { hideWarnings: true },
+  );
   expect(config.observability).toEqual({
     enabled: true,
     logs: { enabled: true, head_sampling_rate: 1 },
-    traces: { enabled: true, head_sampling_rate: 0.1 },
+    traces: { enabled: false },
   });
 });
 
@@ -108,14 +111,18 @@ describe("createWorker repository injection", () => {
 describe("cron telemetry", () => {
   it("emits correlated cleanup started and completed events", async () => {
     const events: TelemetryEvent[] = [];
+    let now = new Date("2026-07-18T12:34:56.000Z");
     const repository = {
       claim: vi.fn(), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(),
-      purgeExpired: vi.fn().mockResolvedValue(2),
+      purgeExpired: vi.fn().mockImplementation(async () => {
+        now = new Date("2026-07-18T12:34:56.075Z");
+        return 2;
+      }),
     };
     const worker = createWorker({
       questions: repository,
       logger: { emit: (event) => events.push(event) },
-      now: () => new Date("2026-07-18T12:34:56.000Z"),
+      now: () => now,
     });
 
     await worker.scheduled({} as ScheduledController, {} as Env);
@@ -129,18 +136,24 @@ describe("cron telemetry", () => {
       stage: "cron",
       outcome: "success",
       operationId: events[0]?.operationId,
+      durationMs: 75,
     });
   });
 
   it("emits a failure classification then rethrows a stable sanitized error", async () => {
     const events: TelemetryEvent[] = [];
+    let now = new Date("2026-07-18T12:34:56.000Z");
     const repository = {
       claim: vi.fn(), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(),
-      purgeExpired: vi.fn().mockRejectedValue(new Error("D1 unavailable: credentials=secret")),
+      purgeExpired: vi.fn().mockImplementation(async () => {
+        now = new Date("2026-07-18T12:34:56.125Z");
+        throw new Error("D1 unavailable: credentials=secret");
+      }),
     };
     const worker = createWorker({
       questions: repository,
       logger: { emit: (event) => events.push(event) },
+      now: () => now,
     });
 
     await expect(worker.scheduled({} as ScheduledController, {} as Env))
@@ -150,6 +163,7 @@ describe("cron telemetry", () => {
       stage: "cron",
       outcome: "failed",
       errorType: "cron_cleanup_failed",
+      durationMs: 125,
     });
     expect(JSON.stringify(events)).not.toContain("credentials=secret");
   });

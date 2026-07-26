@@ -5,6 +5,7 @@ import migrationSql from "../../migrations/0002_group_admins.sql?raw";
 import { GroupAdminsRepository } from "../../src/admin/group-admins";
 import { createWorker } from "../../src/index";
 import type { Env } from "../../src/config";
+import type { TelemetryEvent, TelemetryLogger } from "../../src/telemetry/logger";
 
 const encoder = new TextEncoder();
 
@@ -87,15 +88,16 @@ describe("admin webhook integration", () => {
   async function deliver(
     event: Record<string, unknown>,
     overrides: Partial<Env> = {},
+    options: { lineStatus?: number; logger?: TelemetryLogger } = {},
   ) {
     const queueSend = vi.fn().mockResolvedValue(undefined);
     const lineCalls: Array<{ body: unknown; headers: HeadersInit | undefined }> = [];
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       lineCalls.push({ body: init?.body ? JSON.parse(String(init.body)) : null, headers: init?.headers });
-      return new Response(null, { status: 200 });
+      return new Response(null, { status: options.lineStatus ?? 200 });
     });
 
-    const worker = createWorker();
+    const worker = createWorker({ logger: options.logger });
     const env = {
       LINE_CHANNEL_SECRET: "secret",
       LINE_CHANNEL_ACCESS_TOKEN: "line-token",
@@ -213,5 +215,52 @@ describe("admin webhook integration", () => {
     expect(queueSend).not.toHaveBeenCalled();
     expect(lineCalls).toHaveLength(1);
     expect((lineCalls[0]?.body as { messages: Array<{ text: string }> }).messages[0]?.text).toBe(WRONG_CHAT_TYPE);
+  });
+
+  it("emits correlated telemetry for a successful synchronous admin reply", async () => {
+    const events: TelemetryEvent[] = [];
+
+    const { response } = await deliver(
+      groupEvent(LIST_COMMAND),
+      {},
+      { logger: { emit: (event) => events.push(event) } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(events).toEqual([
+      expect.objectContaining({
+        event: "admin.reply.completed",
+        stage: "line",
+        outcome: "success",
+        webhookEventId: "event-1",
+      }),
+    ]);
+  });
+
+  it("classifies a synchronous admin reply failure without sensitive LINE values", async () => {
+    const events: TelemetryEvent[] = [];
+
+    const { response } = await deliver(
+      groupEvent(LIST_COMMAND),
+      {},
+      {
+        lineStatus: 503,
+        logger: { emit: (event) => events.push(event) },
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(events).toEqual([
+      expect.objectContaining({
+        event: "admin.reply.failed",
+        stage: "line",
+        outcome: "failed",
+        webhookEventId: "event-1",
+        errorType: "line_reply_failed",
+      }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain("reply-1");
+    expect(JSON.stringify(events)).not.toContain("U-seed-1");
+    expect(JSON.stringify(events)).not.toContain("group-1");
   });
 });

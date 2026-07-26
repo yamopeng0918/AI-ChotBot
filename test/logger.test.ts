@@ -2,8 +2,65 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createConsoleTelemetryLogger, type TelemetryEvent } from "../src/telemetry/logger";
 
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+type ForbiddenTelemetryKey =
+  | "question"
+  | "answer"
+  | "userId"
+  | "groupId"
+  | "replyToken"
+  | "authorization"
+  | "accessToken"
+  | "secret"
+  | "error";
+type AssertNever<T extends never> = T;
+type ForbiddenTelemetryKeysMustRemainAbsent = AssertNever<
+  Extract<KeysOfUnion<TelemetryEvent>, ForbiddenTelemetryKey>
+>;
+
+const webhookCorrelatedEvent = {
+  event: "question.completed",
+  stage: "queue",
+  outcome: "success",
+  webhookEventId: "event-1",
+  timestamp: "2026-07-25T10:00:00.000Z",
+} satisfies TelemetryEvent;
+
+const operationCorrelatedEvent = {
+  event: "cron.cleanup.completed",
+  stage: "cron",
+  outcome: "success",
+  operationId: "operation-1",
+  timestamp: "2026-07-25T10:00:00.000Z",
+} satisfies TelemetryEvent;
+
+// @ts-expect-error Telemetry events require one correlation identifier.
+const missingCorrelationEvent: TelemetryEvent = {
+  event: "webhook.rejected",
+  stage: "webhook",
+  outcome: "failed",
+  timestamp: "2026-07-25T10:00:00.000Z",
+  errorType: "invalid_signature",
+};
+
+// @ts-expect-error Telemetry events cannot combine request and webhook identifiers.
+const conflictingCorrelationEvent: TelemetryEvent = {
+  event: "question.completed",
+  stage: "queue",
+  outcome: "success",
+  webhookEventId: "event-1",
+  operationId: "operation-1",
+  timestamp: "2026-07-25T10:00:00.000Z",
+};
+
+void (null as unknown as ForbiddenTelemetryKeysMustRemainAbsent);
+void webhookCorrelatedEvent;
+void operationCorrelatedEvent;
+void missingCorrelationEvent;
+void conflictingCorrelationEvent;
+
 describe("structured telemetry logger", () => {
-  it("writes one JSON object with stable correlation fields", () => {
+  it("writes one allowlisted record object with stable correlation fields", () => {
     const write = vi.fn();
     const logger = createConsoleTelemetryLogger(write);
 
@@ -19,7 +76,7 @@ describe("structured telemetry logger", () => {
     });
 
     expect(write).toHaveBeenCalledOnce();
-    expect(JSON.parse(write.mock.calls[0]![0])).toEqual({
+    expect(write).toHaveBeenCalledWith({
       event: "question.completed",
       stage: "queue",
       outcome: "success",
@@ -46,7 +103,7 @@ describe("structured telemetry logger", () => {
     );
   });
 
-  it("omits prohibited runtime properties from the emitted JSON", () => {
+  it("omits prohibited runtime properties from the emitted object", () => {
     const write = vi.fn();
     const logger = createConsoleTelemetryLogger(write);
     const event = {
@@ -54,6 +111,7 @@ describe("structured telemetry logger", () => {
       stage: "queue",
       outcome: "success",
       timestamp: "2026-07-25T10:00:00.000Z",
+      webhookEventId: "event-1",
       question: "private question",
       answer: "private answer",
       userId: "user-1",
@@ -64,35 +122,54 @@ describe("structured telemetry logger", () => {
 
     logger.emit(event);
 
-    expect(JSON.parse(write.mock.calls[0]![0])).toEqual({
+    expect(write).toHaveBeenCalledWith({
       event: "question.completed",
       stage: "queue",
       outcome: "success",
       timestamp: "2026-07-25T10:00:00.000Z",
+      webhookEventId: "event-1",
     });
   });
 
-  it("does not throw when writing or serializing telemetry fails", () => {
+  it("does not throw when projection or writing telemetry fails", () => {
     const throwingWriter = createConsoleTelemetryLogger(() => {
       throw new Error("write failed");
     });
-    const serializationHazard = {
+    const projectionHazard = {
       event: "question.completed",
       stage: "queue",
       outcome: "success",
+      webhookEventId: "event-1",
       timestamp: "2026-07-25T10:00:00.000Z",
-      durationMs: BigInt(125),
-    } as unknown as TelemetryEvent;
-    const serializingLogger = createConsoleTelemetryLogger();
+    } as TelemetryEvent;
+    Object.defineProperty(projectionHazard, "event", {
+      get() {
+        throw new Error("projection failed");
+      },
+    });
+    const projectingLogger = createConsoleTelemetryLogger(vi.fn());
 
     expect(() =>
       throwingWriter.emit({
         event: "question.completed",
         stage: "queue",
         outcome: "success",
+        webhookEventId: "event-1",
         timestamp: "2026-07-25T10:00:00.000Z",
       }),
     ).not.toThrow();
-    expect(() => serializingLogger.emit(serializationHazard)).not.toThrow();
+    expect(() => projectingLogger.emit(projectionHazard)).not.toThrow();
+  });
+
+  it("passes an allowlisted object to the production console sink", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const logger = createConsoleTelemetryLogger();
+
+    try {
+      logger.emit(webhookCorrelatedEvent);
+      expect(log).toHaveBeenCalledWith(webhookCorrelatedEvent);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

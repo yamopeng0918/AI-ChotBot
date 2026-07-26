@@ -35,6 +35,18 @@ type ForecastResult = {
 const REQUEST_TIMEOUT_MS = 15_000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
+export type WeatherStorageOperation = "cache_read" | "cache_write";
+
+export class WeatherStorageError extends Error {
+  readonly operation: WeatherStorageOperation;
+
+  constructor(operation: WeatherStorageOperation) {
+    super("weather cache unavailable");
+    this.name = "WeatherStorageError";
+    this.operation = operation;
+  }
+}
+
 const WEATHER_DESCRIPTIONS: Record<number, string> = {
   0: "晴朗",
   1: "大致晴朗",
@@ -155,7 +167,12 @@ export class OpenMeteoWeatherService implements AnswerService {
 
     const cacheKey = `weather:${normalizedCacheKey(cityQuery)}`;
     const now = this.now();
-    const cached = await this.cache?.get(cacheKey, now.toISOString());
+    let cached;
+    try {
+      cached = await this.cache?.get(cacheKey, now.toISOString());
+    } catch {
+      throw new WeatherStorageError("cache_read");
+    }
     if (cached) {
       return {
         text: cached.answerText,
@@ -189,13 +206,17 @@ export class OpenMeteoWeatherService implements AnswerService {
     const locationLabel = labelParts.length > 0 ? `${labelParts.join(" / ")} ` : "";
     const text = formatResponse(locationLabel, forecast);
 
-    await this.cache?.set({
-      cacheKey,
-      answerText: text,
-      model: "open-meteo",
-      expiresAt: new Date(now.getTime() + CACHE_TTL_MS).toISOString(),
-      createdAt: now.toISOString(),
-    });
+    try {
+      await this.cache?.set({
+        cacheKey,
+        answerText: text,
+        model: "open-meteo",
+        expiresAt: new Date(now.getTime() + CACHE_TTL_MS).toISOString(),
+        createdAt: now.toISOString(),
+      });
+    } catch {
+      throw new WeatherStorageError("cache_write");
+    }
 
     return {
       text,

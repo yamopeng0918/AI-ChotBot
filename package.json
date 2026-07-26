@@ -2,7 +2,9 @@
   "name": "line-running-community-bot",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test": "vitest run",
     "test:e2e": "vitest run test/e2e/webhook-to-reply.test.ts",
@@ -17,7 +19,6 @@
     "hono": "4.12.30"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260717.1",
     "typescript": "5.9.3",
     "vitest": "4.1.10",
     "wrangler": "4.112.0"

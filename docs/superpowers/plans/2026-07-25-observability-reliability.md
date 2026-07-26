@@ -1,180 +1,153 @@
 # Observability and Reliability Baseline Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Execution note:** This plan was amended on 2026-07-26 after final review.
+> It reflects the implemented interfaces and acceptance tests. The controller
+> owns Git index writes; agents executing this plan do not commit.
 
-**Goal:** Add privacy-safe structured diagnostics, Cloudflare Logs/Traces configuration, generated binding types, and an executable operations runbook so production failures can be located by `webhookEventId`.
+**Goal:** Deliver privacy-safe, independently indexed structured Logs,
+complete transition telemetry, generated binding types, and an executable
+deployment/runbook contract so production failures can be reconstructed by one
+correlation identifier.
 
-**Architecture:** A small telemetry module owns the event schema and JSON emission. The webhook, queue consumer, answer workflow, LINE delivery, storage, and cron paths emit stable classifications through an injected logger, while existing D1 metrics remain the aggregate trend store. Wrangler enables sampled Logs/Traces and generates binding declarations from the deployment configuration.
+**Architecture:** `src/telemetry/logger.ts` owns a closed event catalog,
+mutually exclusive correlation union, allowlisted object projection, and
+best-effort console sink. Webhook, admin, queue, answer, LINE, storage, and
+cron paths emit stable events through an injected logger. Provider services
+expose safe typed observation events rather than raw errors. D1 remains the
+aggregate trend store.
 
-**Tech Stack:** TypeScript 5.9, Cloudflare Workers, Workers Logs and Traces, Hono, Cloudflare Queues, D1, Workers AI, Vitest 4, Wrangler 4.
+**Platform policy:** Workers Logs are enabled at `1.0`. Cloudflare Traces are
+disabled for phase one because automatic external-fetch spans may expose
+user-derived URL query values. Future trace enablement requires a reviewed
+privacy-safe external-request boundary. A proxy Worker is not included.
 
-## Global Constraints
+**Tech stack:** Node.js 22+, TypeScript 5.9, Cloudflare Workers, Workers Logs,
+Hono, Queues, D1, Workers AI, Vitest 4, and Wrangler 4.
 
-- Do not log message text, answers, LINE user IDs, group IDs, reply tokens, authorization headers, secrets, arbitrary error objects, or complete provider responses during normal operation. The existing `LINE_GROUP_ID=__DISCOVER__` operator workflow is the sole exception: it may temporarily output the source `groupId`, and operators must disable discovery immediately after obtaining it.
-- Use `webhookEventId` for LINE-event correlation and `crypto.randomUUID()` for scheduled operations.
-- Logs use stable JSON fields and allowlisted `errorType`/`detail` values.
-- Workers Logs sampling is `1.0`; Traces sampling is `0.1`.
-- D1 metrics remain the long-term aggregate store and must not receive message content.
-- Existing Workers AI, Open-Meteo, LINE push fallback, bounded retry, and DLQ behavior must remain unchanged.
-- Cron failures emit a classified event and rethrow.
-- D1 migrations must remain backward compatible with the previously deployed Worker.
-- No staging environment, gradual deployment, proactive alert, external OTel destination, or new end-user feature is included.
+## Global constraints
 
-## File Map
+- Do not log message/answer text, LINE user/group IDs, reply tokens,
+  authorization headers, access tokens, secrets, raw errors, or provider
+  responses.
+- `LINE_GROUP_ID=__DISCOVER__` is the sole temporary group-ID exception and is
+  not a normal structured event.
+- Every telemetry event has exactly one of `webhookEventId` or `operationId`.
+- Parsed LINE events use `webhookEventId`; pre-parse rejection and cron use
+  `operationId`; cron preserves `crypto.randomUUID()`.
+- `event`, `errorType`, and `detail` use closed vocabularies.
+- The production writer receives an allowlisted plain object.
+- Telemetry projection/writer failure never changes processing.
+- Every retry disposition ends with a retry event carrying the same delay.
+- Provider and cron terminal events include `durationMs`.
+- D1 migrations remain compatible with the previously deployed Worker.
+- Production smoke remains pending until a real deployment.
 
-- Create `src/telemetry/logger.ts`: structured event types, allowlisted classifications, serializer, and console sink.
-- Create `test/logger.test.ts`: event schema, serialization, and privacy-contract tests.
-- Modify `src/jobs/process-message.ts`: queue, provider, storage, LINE, retry, and completion events.
-- Modify `test/process-message.test.ts`: event sequence tests for success and failure branches.
-- Modify `src/index.ts`: logger injection, webhook events, queue boundary events, and cron operation events.
-- Modify `test/webhook.test.ts`: webhook classification tests.
-- Modify `test/worker-dependencies.test.ts`: cron success/failure and queue boundary tests.
-- Modify `wrangler.jsonc`: enable Logs and Traces sampling.
-- Create `worker-configuration.d.ts`: generated Wrangler binding declarations.
-- Modify `src/config.ts`: compose generated production bindings with test-only `FETCHER`.
-- Modify `tsconfig.json`: include the generated declaration and stop loading the generic hand-maintained Workers type bundle directly.
-- Modify `package.json`: add binding-type generation and verification scripts.
-- Modify `test/e2e/webhook-to-reply.test.ts`: correlation path acceptance test.
-- Modify `README.md`: deployment gate and Dashboard smoke checks.
-- Create `docs/operations/observability.md`: Dashboard query, manual thresholds, privacy audit, and rollback runbook.
+## Final file map
+
+- `src/telemetry/logger.ts`: event catalog, types, projection, console sink.
+- `src/answers/types.ts`: typed provider observation events.
+- `src/answers/openrouter.ts`: primary/fallback observation callbacks.
+- `src/weather/openmeteo.ts`: weather cache storage classifications.
+- `src/jobs/process-message.ts`: queue/provider/storage/LINE transitions.
+- `src/index.ts`: webhook/admin/enqueue/queue-boundary/cron events.
+- `wrangler.jsonc`: Logs enabled, Traces disabled.
+- `worker-configuration.d.ts`: generated binding/runtime declarations.
+- `src/config.ts`: production bindings plus test-only `FETCHER`.
+- `package.json` and `package-lock.json`: binding scripts, Node requirement,
+  removal of the unused direct Workers type bundle.
+- `test/**/*.test.ts`: logger, boundary, provider, storage, and exact-sequence
+  coverage.
+- `README.md`: safe deployment and production handoff.
+- `docs/operations/observability.md`: Query Builder, event flows, privacy,
+  migration, smoke, version, and rollback operations.
 
 ---
 
-### Task 1: Privacy-Safe Structured Logger
+## Task 1: Structured logger and correlation invariant
 
-**Files:**
-- Create: `src/telemetry/logger.ts`
-- Create: `test/logger.test.ts`
+**Files**
 
-**Interfaces:**
-- Produces:
-  - `type TelemetryStage = "webhook" | "queue" | "answer" | "line" | "storage" | "cron"`
-  - `type TelemetryOutcome = "success" | "retry" | "fallback" | "failed"`
-  - `type TelemetryErrorType`
-  - `interface TelemetryEvent`
-  - `interface TelemetryLogger { emit(event: TelemetryEvent): void }`
-  - `createConsoleTelemetryLogger(write?: (line: string) => void): TelemetryLogger`
+- Modify `src/telemetry/logger.ts`.
+- Modify `test/logger.test.ts`.
 
-- [ ] **Step 1: Write the failing logger tests**
+### Required interfaces
 
-Create `test/logger.test.ts`:
+The event name is derived from an immutable catalog:
 
 ```ts
-import { describe, expect, it, vi } from "vitest";
-
-import { createConsoleTelemetryLogger, type TelemetryEvent } from "../src/telemetry/logger";
-
-describe("structured telemetry logger", () => {
-  it("writes one JSON object with stable correlation fields", () => {
-    const write = vi.fn();
-    const logger = createConsoleTelemetryLogger(write);
-
-    logger.emit({
-      event: "question.completed",
-      stage: "queue",
-      outcome: "success",
-      webhookEventId: "event-1",
-      timestamp: "2026-07-25T10:00:00.000Z",
-      intent: "weather",
-      model: "open-meteo",
-      durationMs: 125,
-    });
-
-    expect(write).toHaveBeenCalledOnce();
-    expect(JSON.parse(write.mock.calls[0]![0])).toEqual({
-      event: "question.completed",
-      stage: "queue",
-      outcome: "success",
-      webhookEventId: "event-1",
-      timestamp: "2026-07-25T10:00:00.000Z",
-      intent: "weather",
-      model: "open-meteo",
-      durationMs: 125,
-    });
-  });
-
-  it("does not expose arbitrary fields through the event contract", () => {
-    const event = {
-      event: "line.reply.failed",
-      stage: "line",
-      outcome: "fallback",
-      webhookEventId: "event-1",
-      timestamp: "2026-07-25T10:00:00.000Z",
-      errorType: "line_reply_failed",
-    } satisfies TelemetryEvent;
-
-    expect(Object.keys(event)).not.toEqual(
-      expect.arrayContaining(["question", "answer", "userId", "groupId", "replyToken", "error"]),
-    );
-  });
-});
+export const TELEMETRY_EVENT_NAMES = [
+  "webhook.rejected",
+  "webhook.enqueue.completed",
+  "webhook.enqueue.failed",
+  "admin.reply.completed",
+  "admin.reply.failed",
+  "question.started",
+  "question.deduplicated",
+  "question.retry",
+  "question.completed",
+  "storage.claim.completed",
+  "storage.claim.failed",
+  "storage.prepare.completed",
+  "storage.prepare.failed",
+  "storage.complete.completed",
+  "storage.complete.failed",
+  "storage.release.failed",
+  "answer.ai.attempt.started",
+  "answer.ai.attempt.completed",
+  "answer.ai.attempt.failed",
+  "answer.ai.fallback.started",
+  "answer.prepared.reused",
+  "answer.completed",
+  "answer.failed",
+  "weather.settings.failed",
+  "line.reply.completed",
+  "line.reply.failed",
+  "line.push.completed",
+  "line.push.failed",
+  "queue.message.retry",
+  "cron.cleanup.started",
+  "cron.cleanup.completed",
+  "cron.cleanup.failed",
+] as const;
 ```
 
-- [ ] **Step 2: Run the logger tests and verify RED**
-
-Run:
-
-```powershell
-npm.cmd test -- test/logger.test.ts
-```
-
-Expected: FAIL because `src/telemetry/logger.ts` does not exist.
-
-- [ ] **Step 3: Implement the logger contract**
-
-Create `src/telemetry/logger.ts`:
+Correlation is required and mutually exclusive:
 
 ```ts
-export type TelemetryStage = "webhook" | "queue" | "answer" | "line" | "storage" | "cron";
-export type TelemetryOutcome = "success" | "retry" | "fallback" | "failed";
+type TelemetryCorrelation =
+  | { webhookEventId: string; operationId?: never }
+  | { operationId: string; webhookEventId?: never };
 
-export type TelemetryErrorType =
-  | "invalid_signature"
-  | "invalid_json"
-  | "queue_unavailable"
-  | "lease_unavailable"
-  | "storage_unavailable"
-  | "ai_rate_limited"
-  | "ai_timeout"
-  | "ai_provider_error"
-  | "weather_timeout"
-  | "weather_provider_error"
-  | "line_reply_failed"
-  | "line_push_failed"
-  | "cron_cleanup_failed"
-  | "unexpected_error";
+export type TelemetryEvent = TelemetryFields & TelemetryCorrelation;
+```
 
-export interface TelemetryEvent {
-  event: string;
-  stage: TelemetryStage;
-  outcome: TelemetryOutcome;
-  timestamp: string;
-  webhookEventId?: string;
-  operationId?: string;
-  intent?: "general" | "weather";
-  model?: string | null;
-  durationMs?: number;
-  retryDelaySeconds?: number;
-  errorType?: TelemetryErrorType;
-  detail?: "primary_model" | "fallback_model" | "reply" | "push" | "reused_prepared";
-}
+The writer contract is object-based:
 
-export interface TelemetryLogger {
-  emit(event: TelemetryEvent): void;
-}
-
+```ts
 export function createConsoleTelemetryLogger(
-  write: (line: string) => void = (line) => console.log(line),
-): TelemetryLogger {
-  return {
-    emit(event) {
-      write(JSON.stringify(event));
-    },
-  };
-}
+  write: (record: TelemetryRecord) => void = (record) => console.log(record),
+): TelemetryLogger;
 ```
 
-- [ ] **Step 4: Run logger tests and type checking**
+Projection constructs a new record from allowlisted fields and throws when a
+runtime caller bypasses typing without a correlation identifier. `emit`
+catches projection and writer failures.
+
+### TDD checklist
+
+- [ ] RED: object writer expectation fails against the previous sink.
+- [ ] GREEN: the injected writer receives one plain allowlisted object.
+- [ ] RED: runtime-added forbidden properties survive the previous serializer.
+- [ ] GREEN: `question`, `answer`, `userId`, `groupId`, `replyToken`,
+  `authorization`, `accessToken`, `secret`, and `error` are absent.
+- [ ] Add a compile-time assertion that the forbidden-key intersection with
+  `TelemetryEvent` is `never`.
+- [ ] Verify a valid `webhookEventId` event.
+- [ ] Verify a valid `operationId` event.
+- [ ] Verify missing and dual identifiers fail type checking.
+- [ ] Verify a malformed runtime event does not reach the writer.
+- [ ] Verify a throwing writer does not escape `emit`.
+- [ ] Verify every catalog name remains stable.
 
 Run:
 
@@ -183,711 +156,432 @@ npm.cmd test -- test/logger.test.ts
 npm.cmd run typecheck
 ```
 
-Expected: 2 logger tests PASS and type checking exits 0.
+---
 
-- [ ] **Step 5: Commit Task 1**
+## Task 2: Provider observation and safe classification
+
+**Files**
+
+- Modify `src/answers/types.ts`.
+- Modify `src/answers/openrouter.ts`.
+- Modify `src/weather/openmeteo.ts`.
+- Modify `test/openrouter.test.ts`.
+- Modify `test/weather.test.ts`.
+
+### Workers AI observer
+
+`AnswerService.answer` accepts an optional best-effort
+`AnswerProviderObserver`. The observer receives only:
+
+```ts
+type AnswerProviderEvent =
+  | {
+      type: "attempt.started";
+      provider: "workers_ai";
+      role: "primary" | "fallback";
+      model: string;
+    }
+  | {
+      type: "attempt.completed";
+      provider: "workers_ai";
+      role: "primary" | "fallback";
+      model: string;
+      durationMs: number;
+    }
+  | {
+      type: "attempt.failed";
+      provider: "workers_ai";
+      role: "primary" | "fallback";
+      model: string;
+      reason: "rate_limited" | "provider_error" | "timeout";
+      durationMs: number;
+    }
+  | {
+      type: "fallback.started";
+      provider: "workers_ai";
+      role: "fallback";
+      model: string;
+      reason: "rate_limited" | "provider_error" | "timeout";
+    };
+```
+
+The provider catches observer failures so observability cannot alter answer
+selection.
+
+### Weather storage boundary
+
+Weather cache read/write failures are surfaced through safe typed
+classifications:
+
+- `storage_unavailable` + `weather_cache_read`;
+- `storage_unavailable` + `weather_cache_write`.
+
+Group-settings failures remain
+`weather.settings.failed/storage_unavailable/weather_settings`. Provider
+timeout/failure remains `weather_timeout` or `weather_provider_error`.
+
+### TDD checklist
+
+- [ ] Primary success reports start and completion with model and duration.
+- [ ] Primary failure reports a safe reason and duration.
+- [ ] Fallback selection reports the safe triggering reason.
+- [ ] Fallback success reports its own start and completion.
+- [ ] Observer failure does not change the provider result.
+- [ ] Weather timeout is distinct from provider failure.
+- [ ] Cache read/write failures are distinct from weather provider failures.
+- [ ] No provider event contains question text or a raw caught error.
+
+Run:
 
 ```powershell
-git add src/telemetry/logger.ts test/logger.test.ts
-git commit -m "feat: add structured telemetry logger"
+npm.cmd test -- test/openrouter.test.ts test/weather.test.ts
+npm.cmd run typecheck
 ```
 
 ---
 
-### Task 2: Instrument the Question Processing Workflow
+## Task 3: Question-processing transition semantics
 
-**Files:**
-- Modify: `src/jobs/process-message.ts`
-- Modify: `test/process-message.test.ts`
+**Files**
 
-**Interfaces:**
-- Consumes: `TelemetryLogger` and `TelemetryEvent` from Task 1.
-- Extends: `ProcessDependencies` with `logger?: TelemetryLogger`.
-- Produces: stable events for claim, provider selection/failure, storage, LINE fallback, retry, and final completion.
+- Modify `src/jobs/process-message.ts`.
+- Modify `test/process-message.test.ts`.
 
-- [ ] **Step 1: Add a failing successful-flow event sequence test**
+### Required success flows
 
-In `test/process-message.test.ts`, add a logger collector to the existing successful fixture:
+Generic injected-service success:
 
-```ts
-const events: TelemetryEvent[] = [];
-const logger: TelemetryLogger = { emit: (event) => events.push(event) };
+```text
+question.started
+storage.claim.completed
+answer.completed
+storage.prepare.completed
+line.reply.completed
+storage.complete.completed
+question.completed
 ```
 
-Pass `logger` in `ProcessDependencies`, then assert:
+Production primary success inserts:
 
-```ts
-expect(events.map((event) => event.event)).toEqual([
-  "question.started",
-  "answer.completed",
-  "line.reply.completed",
-  "question.completed",
-]);
-expect(events.at(-1)).toMatchObject({
-  stage: "queue",
-  outcome: "success",
-  webhookEventId: job.webhookEventId,
-  intent: "general",
-});
+```text
+answer.ai.attempt.started
+answer.ai.attempt.completed
 ```
 
-Import the interfaces:
+before `answer.completed`.
 
-```ts
-import type { TelemetryEvent, TelemetryLogger } from "../src/telemetry/logger";
+Production fallback success inserts:
+
+```text
+answer.ai.attempt.started        primary
+answer.ai.attempt.failed         primary
+answer.ai.fallback.started
+answer.ai.attempt.started        fallback
+answer.ai.attempt.completed      fallback
+answer.completed
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+Prepared reuse:
 
-Run the exact test name introduced in Step 1:
-
-```powershell
-npm.cmd test -- test/process-message.test.ts -t "emits the successful processing sequence"
+```text
+question.started
+storage.claim.completed
+answer.prepared.reused
+line.reply.completed
+storage.complete.completed
+question.completed
 ```
 
-Expected: FAIL because `ProcessDependencies` has no logger and no events are emitted.
+Completed duplicate:
 
-- [ ] **Step 3: Add the logger dependency and common emitter**
-
-In `src/jobs/process-message.ts`, import the logger:
-
-```ts
-import { AnswerUnavailableError } from "../answers/openrouter";
-import type { TelemetryEvent, TelemetryLogger } from "../telemetry/logger";
+```text
+question.started
+storage.claim.completed
+question.deduplicated
 ```
 
-Extend `ProcessDependencies`:
+### Required storage and retry behavior
 
-```ts
-logger?: TelemetryLogger;
+- Claim success emits `storage.claim.completed`, including busy/completed
+  results.
+- Claim exception emits `storage.claim.failed` and terminates with
+  `question.retry`.
+- Prepare success/failure emits `storage.prepare.completed/failed`.
+- Complete success/failure emits `storage.complete.completed/failed`.
+- Release failure emits `storage.release.failed` without swallowing the final
+  retry event.
+- Every returned retry disposition is created through one helper that emits
+  `question.retry` with `retryDelaySeconds`.
+
+### Required LINE behavior
+
+Reply-to-push success contains:
+
+```text
+line.reply.failed
+line.push.completed
+storage.complete.completed
+question.completed
 ```
 
-Add a helper:
+Both delivery methods failing ends with:
 
-```ts
-function answerErrorType(
-  intent: "general" | "weather",
-  error: unknown,
-): TelemetryEvent["errorType"] {
-  if (intent === "weather") {
-    return error instanceof DOMException && error.name === "AbortError"
-      ? "weather_timeout"
-      : "weather_provider_error";
-  }
-  if (error instanceof AnswerUnavailableError) {
-    if (error.reason === "rate_limited") return "ai_rate_limited";
-    if (error.reason === "timeout") return "ai_timeout";
-  }
-  return "ai_provider_error";
-}
-
-function emit(
-  logger: TelemetryLogger | undefined,
-  event: Omit<TelemetryEvent, "timestamp">,
-  now?: () => Date,
-): void {
-  logger?.emit({ ...event, timestamp: (now?.() ?? new Date()).toISOString() });
-}
+```text
+line.reply.failed
+line.push.failed
+storage.complete.completed | storage.complete.failed
+question.retry
 ```
 
-At the start of `processQuestion`, emit:
+The final retry delay is present even when storage completion also fails.
 
-```ts
-emit(dependencies.logger, {
-  event: "question.started",
-  stage: "queue",
-  outcome: "success",
-  webhookEventId: job.webhookEventId,
-  intent: metricIntent,
-}, dependencies.now);
-```
+### Duration behavior
 
-After a provider answer succeeds, emit:
+- AI attempt terminal events carry attempt duration.
+- `answer.completed` and `answer.failed` carry provider-stage duration.
+- `question.completed` and `question.deduplicated` carry attempt duration.
 
-```ts
-emit(dependencies.logger, {
-  event: "answer.completed",
-  stage: "answer",
-  outcome: "success",
-  webhookEventId: job.webhookEventId,
-  intent: metricIntent,
-  model: answer.model,
-}, dependencies.now);
-```
+### TDD checklist
 
-After LINE reply succeeds, emit `line.reply.completed`. Immediately before each successful return, emit `question.completed` with the final model, intent, status-derived outcome, and `elapsedMs`.
+- [ ] Assert every sequence above in exact order.
+- [ ] Assert primary/fallback model role and safe fallback reason.
+- [ ] Assert weather timeout/provider/storage classifications separately.
+- [ ] Assert claim/prepare/complete success events.
+- [ ] Assert claim/prepare/complete/release failure events.
+- [ ] Assert prepared reuse contains no new provider/prepare event.
+- [ ] Assert completed duplicate contains no new completion outcome.
+- [ ] Assert reply-to-push success.
+- [ ] Assert reply-plus-push failure ends in retry with delay.
+- [ ] Assert raw question, answer, identity, token, and caught error data are
+  absent from collected events.
 
-- [ ] **Step 4: Run the successful-flow test and verify GREEN**
-
-```powershell
-npm.cmd test -- test/process-message.test.ts -t "emits the successful processing sequence"
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Add failing tests for classified failure and fallback events**
-
-Add focused tests using existing fixtures:
-
-```ts
-expect(events).toEqual(expect.arrayContaining([
-  expect.objectContaining({
-    event: "line.reply.failed",
-    stage: "line",
-    outcome: "fallback",
-    errorType: "line_reply_failed",
-  }),
-  expect.objectContaining({
-    event: "line.push.completed",
-    stage: "line",
-    outcome: "success",
-  }),
-]));
-```
-
-For a D1 claim rejection:
-
-```ts
-expect(events.at(-1)).toMatchObject({
-  event: "question.retry",
-  stage: "storage",
-  outcome: "retry",
-  errorType: "lease_unavailable",
-  retryDelaySeconds: 1,
-});
-```
-
-For both LINE delivery methods failing:
-
-```ts
-expect(events).toEqual(expect.arrayContaining([
-  expect.objectContaining({
-    event: "line.push.failed",
-    errorType: "line_push_failed",
-    outcome: "failed",
-  }),
-]));
-```
-
-- [ ] **Step 6: Run the new failure tests and verify RED**
-
-```powershell
-npm.cmd test -- test/process-message.test.ts -t "emits classified"
-```
-
-Expected: FAIL because the classified failure events are absent.
-
-- [ ] **Step 7: Emit events at each existing decision point**
-
-Add emissions without changing return dispositions:
-
-- claim exception: `question.retry`, `storage`, `lease_unavailable`, delay `1`;
-- busy lease: `question.retry`, `storage`, `lease_unavailable`, computed delay;
-- answer exception: `answer.failed`, `answer`, with `answerErrorType(metricIntent, error)`;
-- prepare/complete exception: `question.retry`, `storage`, `storage_unavailable`;
-- reply failure: `line.reply.failed`, `line`, `fallback`, `line_reply_failed`;
-- push success: `line.push.completed`;
-- push failure: `line.push.failed`, `line`, `failed`, `line_push_failed`;
-- final completion: `question.completed`.
-
-Do not pass caught error objects or messages into `emit`.
-
-- [ ] **Step 8: Run process tests and type checking**
+Run:
 
 ```powershell
 npm.cmd test -- test/process-message.test.ts
 npm.cmd run typecheck
 ```
 
-Expected: all process-message tests PASS and type checking exits 0.
-
-- [ ] **Step 9: Commit Task 2**
-
-```powershell
-git add src/jobs/process-message.ts test/process-message.test.ts
-git commit -m "feat: trace question processing outcomes"
-```
-
 ---
 
-### Task 3: Instrument Webhook, Queue Boundary, and Cron
+## Task 4: Webhook, admin, queue boundary, and cron
 
-**Files:**
-- Modify: `src/index.ts`
-- Modify: `test/webhook.test.ts`
-- Modify: `test/worker-dependencies.test.ts`
+**Files**
 
-**Interfaces:**
-- Consumes: `TelemetryLogger` and `createConsoleTelemetryLogger` from Task 1.
-- Extends: `WorkerDependencies` with `logger?: TelemetryLogger`.
-- Produces: webhook classifications, queue boundary classifications, and cron operation events.
+- Modify `src/index.ts`.
+- Modify `test/webhook.test.ts`.
+- Modify `test/admin/webhook.test.ts`.
+- Modify `test/worker-dependencies.test.ts`.
+- Modify `test/e2e/webhook-to-reply.test.ts`.
 
-- [ ] **Step 1: Write failing webhook classification tests**
+### Webhook correlation
 
-In `test/webhook.test.ts`, inject:
+- Generate a request operation identifier before signature/body validation.
+- Missing signature, invalid signature, and invalid JSON emit
+  `webhook.rejected` with that identifier.
+- Successful enqueue emits `webhook.enqueue.completed` with the job's
+  `webhookEventId`.
+- Enqueue failure emits `webhook.enqueue.failed` with the same job identifier.
 
-```ts
-const events: TelemetryEvent[] = [];
-const worker = createWorker({ logger: { emit: (event) => events.push(event) } });
+### Admin path
+
+Synchronous admin LINE replies emit `admin.reply.completed` or
+`admin.reply.failed`. Use the LINE event ID when present; otherwise generate an
+operation identifier. Failure is classified as `line_reply_failed`.
+
+### Queue boundary
+
+An unexpected exception outside the classified process flow retries the
+message and emits `queue.message.retry` with the job identifier,
+`unexpected_error`, and the exact retry delay.
+
+### Cron
+
+One `crypto.randomUUID()` identifier connects:
+
+```text
+cron.cleanup.started
+cron.cleanup.completed | cron.cleanup.failed
 ```
 
-For a missing or invalid signature, assert:
+Both terminal variants contain `durationMs`. Failure contains
+`cron_cleanup_failed` and rethrows a stable replacement error.
 
-```ts
-expect(events.at(-1)).toMatchObject({
-  event: "webhook.rejected",
-  stage: "webhook",
-  outcome: "failed",
-  errorType: "invalid_signature",
-});
-```
+### TDD checklist
 
-For invalid JSON with a valid signature, assert `errorType: "invalid_json"`. For queue send failure, assert `event: "webhook.enqueue.failed"` and `errorType: "queue_unavailable"`.
+- [ ] Pre-auth and pre-parse rejection require `operationId`.
+- [ ] Enqueue completion/failure require the job `webhookEventId`.
+- [ ] Admin reply success/failure are correlated and privacy-safe.
+- [ ] Unexpected queue retry contains delay and classification.
+- [ ] Cron terminals share one operation identifier and contain duration.
+- [ ] Cron failure rethrows only stable text.
+- [ ] End-to-end correlation begins with `webhook.enqueue.completed` and
+  continues through the complete generic success sequence.
 
-- [ ] **Step 2: Run webhook tests and verify RED**
+Run:
 
 ```powershell
-npm.cmd test -- test/webhook.test.ts -t "telemetry"
-```
-
-Expected: FAIL because `WorkerDependencies` has no logger and webhook events are absent.
-
-- [ ] **Step 3: Inject and use the logger in `createWorker`**
-
-In `src/index.ts`:
-
-```ts
-import { createConsoleTelemetryLogger, type TelemetryLogger } from "./telemetry/logger";
-```
-
-Extend `WorkerDependencies`:
-
-```ts
-logger?: TelemetryLogger;
-```
-
-Inside `createWorker`:
-
-```ts
-const logger = overrides.logger ?? createConsoleTelemetryLogger();
-const timestamp = () => (overrides.now?.() ?? new Date()).toISOString();
-```
-
-Emit the exact classifications asserted in Step 1. Never log the body, signature, user, group, or token in structured telemetry. Preserve the existing `LINE_GROUP_ID=__DISCOVER__` temporary operator-only group-ID output as the sole exception. Pass `logger` into `ProcessDependencies`.
-
-- [ ] **Step 4: Run webhook tests and verify GREEN**
-
-```powershell
-npm.cmd test -- test/webhook.test.ts
-```
-
-Expected: all webhook tests PASS.
-
-- [ ] **Step 5: Write failing cron tests**
-
-In `test/worker-dependencies.test.ts`, inject a collector and assert successful purge:
-
-```ts
-expect(events.map((event) => event.event)).toEqual([
-  "cron.cleanup.started",
-  "cron.cleanup.completed",
-]);
-expect(events[0]?.operationId).toEqual(expect.any(String));
-expect(events[1]).toMatchObject({ stage: "cron", outcome: "success" });
-```
-
-Add a failure test where `purgeExpired` rejects and assert:
-
-```ts
-await expect(worker.scheduled({} as ScheduledController, env, {} as ExecutionContext)).rejects.toThrow("D1 unavailable");
-expect(events.at(-1)).toMatchObject({
-  event: "cron.cleanup.failed",
-  stage: "cron",
-  outcome: "failed",
-  errorType: "cron_cleanup_failed",
-});
-```
-
-- [ ] **Step 6: Run cron tests and verify RED**
-
-```powershell
-npm.cmd test -- test/worker-dependencies.test.ts -t "cron telemetry"
-```
-
-Expected: FAIL because cron events are absent.
-
-- [ ] **Step 7: Implement cron correlation and rethrow**
-
-Wrap scheduled cleanup:
-
-```ts
-async scheduled(_controller, env) {
-  const operationId = crypto.randomUUID();
-  logger.emit({
-    event: "cron.cleanup.started",
-    stage: "cron",
-    outcome: "success",
-    operationId,
-    timestamp: timestamp(),
-  });
-  try {
-    await questionsFor(env).purgeExpired(timestamp());
-    logger.emit({
-      event: "cron.cleanup.completed",
-      stage: "cron",
-      outcome: "success",
-      operationId,
-      timestamp: timestamp(),
-    });
-  } catch {
-    logger.emit({
-      event: "cron.cleanup.failed",
-      stage: "cron",
-      outcome: "failed",
-      operationId,
-      timestamp: timestamp(),
-      errorType: "cron_cleanup_failed",
-    });
-    throw new Error("scheduled cleanup failed");
-  }
-},
-```
-
-The failure test should assert the stable replacement error text, not the original provider error.
-
-- [ ] **Step 8: Add queue boundary coverage**
-
-In `test/worker-dependencies.test.ts`, assert an unexpected `processQuestion` exception produces:
-
-```ts
-expect(events.at(-1)).toMatchObject({
-  event: "queue.message.retry",
-  stage: "queue",
-  outcome: "retry",
-  webhookEventId: job.webhookEventId,
-  retryDelaySeconds: 1,
-  errorType: "unexpected_error",
-});
-```
-
-Implement this emission in the queue handler catch without logging the exception.
-
-- [ ] **Step 9: Run all boundary tests and type checking**
-
-```powershell
-npm.cmd test -- test/webhook.test.ts test/worker-dependencies.test.ts
+npm.cmd test -- test/webhook.test.ts test/admin/webhook.test.ts test/worker-dependencies.test.ts test/e2e/webhook-to-reply.test.ts
 npm.cmd run typecheck
 ```
 
-Expected: all focused tests PASS and type checking exits 0.
-
-- [ ] **Step 10: Commit Task 3**
-
-```powershell
-git add src/index.ts test/webhook.test.ts test/worker-dependencies.test.ts
-git commit -m "feat: trace worker boundaries and cleanup"
-```
-
 ---
 
-### Task 4: Enable Observability and Generate Binding Types
+## Task 5: Cloudflare configuration, generated bindings, and package cleanup
 
-**Files:**
-- Modify: `wrangler.jsonc`
-- Modify: `package.json`
-- Create: `worker-configuration.d.ts`
-- Modify: `src/config.ts`
-- Modify: `tsconfig.json`
-- Modify: `test/worker-dependencies.test.ts`
+**Files**
 
-**Interfaces:**
-- Produces: generated global `Env` bindings from `wrangler.jsonc`.
-- Preserves: exported `Env` alias from `src/config.ts` for existing imports.
+- Modify `wrangler.jsonc`.
+- Modify `test/worker-dependencies.test.ts`.
+- Modify `package.json`.
+- Modify `package-lock.json`.
+- Verify `worker-configuration.d.ts`, `src/config.ts`, and `tsconfig.json`.
 
-- [ ] **Step 1: Add a failing configuration contract test**
-
-In `test/worker-dependencies.test.ts`, import the config as raw text:
-
-```ts
-import wranglerConfig from "../wrangler.jsonc?raw";
-```
-
-Add:
-
-```ts
-it("enables production logs and sampled traces", () => {
-  const config = JSON.parse(wranglerConfig);
-  expect(config.observability).toEqual({
-    enabled: true,
-    logs: { enabled: true, head_sampling_rate: 1 },
-    traces: { enabled: true, head_sampling_rate: 0.1 },
-  });
-});
-```
-
-- [ ] **Step 2: Run the config test and verify RED**
-
-```powershell
-npm.cmd test -- test/worker-dependencies.test.ts -t "sampled traces"
-```
-
-Expected: FAIL because `observability` is absent.
-
-- [ ] **Step 3: Add the observability configuration**
-
-Add to `wrangler.jsonc`:
+### Required configuration
 
 ```jsonc
 "observability": {
   "enabled": true,
   "logs": { "enabled": true, "head_sampling_rate": 1 },
-  "traces": { "enabled": true, "head_sampling_rate": 0.1 }
-},
-```
-
-- [ ] **Step 4: Run config test and Wrangler dry-run**
-
-```powershell
-npm.cmd test -- test/worker-dependencies.test.ts -t "sampled traces"
-npm.cmd run deploy -- --dry-run
-```
-
-Expected: test PASS; dry-run exits 0 and lists `MESSAGE_QUEUE`, `DB`, and `AI`.
-
-- [ ] **Step 5: Add type generation scripts**
-
-Modify `package.json` scripts:
-
-```json
-"types:bindings": "wrangler types worker-configuration.d.ts --env-interface WorkerEnv",
-"types:bindings:check": "wrangler types worker-configuration.d.ts --env-interface WorkerEnv --check",
-"typecheck": "npm run types:bindings:check && tsc --noEmit"
-```
-
-Run:
-
-```powershell
-npm.cmd run types:bindings
-```
-
-Expected: `worker-configuration.d.ts` is created from `wrangler.jsonc`.
-
-- [ ] **Step 6: Compose production and test-only bindings**
-
-Replace the handwritten binding declarations in `src/config.ts` with:
-
-```ts
-import type { Fetcher } from "./line/client";
-
-export type Env = WorkerEnv & {
-  FETCHER?: Fetcher;
-};
-```
-
-Update `tsconfig.json`:
-
-```json
-{
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022"],
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "types": ["vitest/globals"],
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "skipLibCheck": true,
-    "noEmit": true
-  },
-  "include": ["worker-configuration.d.ts", "src", "test"]
+  "traces": { "enabled": false }
 }
 ```
 
-The scripts explicitly generate the global `WorkerEnv` interface; do not duplicate its fields manually.
+Use Wrangler's comment-tolerant configuration reader in the contract test:
 
-- [ ] **Step 7: Verify generated type drift detection**
+```ts
+import { unstable_readConfig } from "wrangler";
 
-```powershell
-npm.cmd run types:bindings:check
-npm.cmd run typecheck
+const config = unstable_readConfig({ config: "wrangler.jsonc" });
+expect(config.observability).toEqual({
+  enabled: true,
+  logs: { enabled: true, head_sampling_rate: 1 },
+  traces: { enabled: false },
+});
 ```
 
-Expected: both commands exit 0.
+### Binding and package requirements
 
-Temporarily rename the `AI` binding in an uncommitted edit to `AI_TEST`, run `npm.cmd run types:bindings:check`, and require a non-zero exit. Restore `wrangler.jsonc` immediately and rerun the command successfully.
+- Keep:
+  - `types:bindings`;
+  - `types:bindings:check`;
+  - `typecheck` invoking the drift check before TypeScript.
+- Keep generated runtime declarations in `worker-configuration.d.ts`.
+- Keep test-only `FETCHER` composition separate from `WorkerEnv`.
+- Remove the unused direct `@cloudflare/workers-types` devDependency through
+  npm and update the lockfile.
+- Set the project Node requirement to 22 or newer.
 
-- [ ] **Step 8: Run the full suite and dry-run**
+### Verification
 
 ```powershell
-npm.cmd test
+npm.cmd ci
+npm.cmd run types:bindings:check
+npm.cmd test -- test/worker-dependencies.test.ts
 npm.cmd run typecheck
 npm.cmd run deploy -- --dry-run
 ```
 
-Expected: all tests PASS, type checking exits 0, and dry-run exits 0.
-
-- [ ] **Step 9: Commit Task 4**
-
-```powershell
-git add wrangler.jsonc package.json worker-configuration.d.ts src/config.ts tsconfig.json test/worker-dependencies.test.ts
-git commit -m "chore: enable workers observability"
-```
+The dry-run must list Queue, D1, and AI bindings. If sandbox restrictions block
+Wrangler's external/profile access, record the limitation for controller
+verification rather than claiming success.
 
 ---
 
-### Task 5: Operations Runbook and End-to-End Acceptance
+## Task 6: Operations documentation and production handoff
 
-**Files:**
-- Create: `docs/operations/observability.md`
-- Modify: `README.md`
-- Modify: `test/e2e/webhook-to-reply.test.ts`
+**Files**
 
-**Interfaces:**
-- Consumes: structured event names from Tasks 2 and 3.
-- Produces: an operator-executable Dashboard inspection, privacy audit, deployment, and rollback procedure.
+- Modify `README.md`.
+- Modify `docs/operations/observability.md`.
+- Modify the approved design and this plan.
 
-- [ ] **Step 1: Add a failing end-to-end correlation test**
+### Query Builder contract
 
-In the E2E fixture, collect telemetry:
+Document direct custom fields:
 
-```ts
-const events: TelemetryEvent[] = [];
-const worker = createWorker({
-  fetcher,
-  now: () => new Date("2026-07-18T00:00:00.000Z"),
-  answerService,
-  logger: { emit: (event) => events.push(event) },
-});
-```
+- `event`;
+- `webhookEventId` or `operationId`;
+- `stage`;
+- `outcome`;
+- `errorType`.
 
-After webhook delivery and queue consumption, assert:
+To discover a new event ID, filter:
 
-```ts
-const correlated = events.filter((entry) => entry.webhookEventId === "event-e2e-1");
-expect(correlated.map((entry) => entry.event)).toEqual(expect.arrayContaining([
-  "webhook.enqueue.completed",
-  "question.started",
-  "answer.completed",
-  "line.reply.completed",
-  "question.completed",
-]));
-expect(JSON.stringify(correlated)).not.toContain("@running-bot");
-expect(JSON.stringify(correlated)).not.toContain("line-user-1");
-expect(JSON.stringify(correlated)).not.toContain("reply-e2e-1");
-```
+| Field | Operator | Value |
+| --- | --- | --- |
+| `event` | Equals | `webhook.enqueue.completed` |
+| `stage` | Equals | `webhook` |
+| `outcome` | Equals | `success` |
 
-- [ ] **Step 2: Run E2E test and verify RED**
+Copy `webhookEventId`, then run a separate
+`webhookEventId Equals <value>` query. Because filters combine with `AND`, do
+not combine the mutually exclusive identifier fields.
+
+### Privacy audit
+
+Generate:
 
 ```powershell
-npm.cmd test -- test/e2e/webhook-to-reply.test.ts -t "correlates"
+$privacyMarker = "OBS-PRIVACY-" + [guid]::NewGuid().ToString("N")
 ```
 
-Expected: FAIL until `webhook.enqueue.completed` and the complete correlated sequence are emitted.
+Send one weather mention containing the marker, confirm processing telemetry
+exists, then search the entire Worker Logs window for the marker with no
+correlation filter. Require zero results. Traces are disabled and are not
+reported as searched.
 
-- [ ] **Step 3: Add any missing enqueue completion event**
-
-In `src/index.ts`, after a successful queue send:
-
-```ts
-logger.emit({
-  event: "webhook.enqueue.completed",
-  stage: "webhook",
-  outcome: "success",
-  webhookEventId: job.webhookEventId,
-  timestamp: timestamp(),
-});
-```
-
-Do not add message, user, group, or token fields.
-
-- [ ] **Step 4: Run E2E test and verify GREEN**
+### Deployment gate
 
 ```powershell
-npm.cmd test -- test/e2e/webhook-to-reply.test.ts -t "correlates"
+npm.cmd ci
+npm.cmd run types:bindings:check
+npm.cmd test
+npm.cmd run typecheck
+npm.cmd run deploy -- --dry-run
+npx wrangler d1 migrations list line-bot-diagnostics --remote
+npx wrangler d1 migrations apply line-bot-diagnostics --remote
+npx wrangler d1 migrations list line-bot-diagnostics --remote
+npx wrangler versions list
+$knownGoodVersionId = "<VERSION_ID>"
+npm.cmd run deploy
 ```
 
-Expected: PASS.
+The checked-in migrations are `0001_questions.sql`,
+`0002_group_admins.sql`, `0003_worker_metrics.sql`, and
+`0004_group_settings_weather_cache.sql`. Review them before remote apply and
+require compatibility with the previous Worker version.
 
-- [ ] **Step 5: Write the observability runbook**
+After production smoke succeeds, run `npx wrangler versions list` again and
+record the newly deployed Version ID.
 
-Create `docs/operations/observability.md` with these exact sections:
-
-```markdown
-# Observability operations
-
-## Privacy contract
-
-Normal logs may contain event names, stage, outcome, `webhookEventId`, intent,
-model, duration, retry delay, and allowlisted classifications. They must not
-contain message or answer text, LINE user/group IDs, reply tokens, credentials,
-authorization headers, or raw provider errors.
-
-The temporary `LINE_GROUP_ID=__DISCOVER__` workflow is the sole exception: it
-prints the source group ID for setup and must be disabled immediately afterward.
-
-## Dashboard inspection
-
-1. Open Cloudflare Dashboard > Workers & Pages > line-running-community-bot.
-2. Open Observability > Logs and search the exact `webhookEventId`.
-3. Confirm the ordered webhook, queue, answer, LINE, storage, and completion
-   events.
-4. Open Traces for slow or failed invocations and compare `durationMs`.
-5. Open Queues metrics for line-question-jobs and inspect backlog, oldest
-   message age, retry outcomes, and DLQ outcomes.
-6. Query D1 metrics for daily outcome and latency trends.
-
-## Manual investigation triggers
-
-- Backlog grows continuously or oldest message age exceeds two minutes.
-- `provider_unavailable` or `reply_failed` repeats in a short period.
-- Fallback frequency is visibly above the established daily baseline.
-- The daily cleanup completion event is absent.
-- A forbidden privacy field appears in any normal log.
-
-## Production smoke check
-
-1. Require `/health` HTTP 200 with `{"status":"ok"}`.
-2. Send one harmless LINE-native mention in the allowed group.
-3. Require exactly one visible answer.
-4. Search its `webhookEventId` and require the complete success sequence.
-5. Confirm one `answered` D1 row and no message content in Logs/Traces.
-6. Confirm Queue backlog returns to its prior level.
-
-## Rollback
-
-1. Record `npx wrangler deployments list`.
-2. Copy the known-good ID from `npx wrangler deployments list` into
-   `$knownGoodDeploymentId`, then run
-   `npx wrangler rollback $knownGoodDeploymentId --message "rollback after failed smoke"`.
-3. Repeat the production smoke check.
-4. Remember that rollback does not revert D1 migrations or resource state.
-```
-
-- [ ] **Step 6: Update README deployment gates**
-
-Add to the verification command block:
+Rollback uses:
 
 ```powershell
-npm run types:bindings:check
-npm test
-npm run typecheck
-npm run deploy -- --dry-run
+npx wrangler rollback $knownGoodVersionId --message "rollback after failed smoke"
 ```
 
-Link `docs/operations/observability.md` from the production smoke and rollback sections. State that Logs use 100% sampling and Traces use 10% during the baseline phase.
+Worker rollback does not revert D1 migrations/data or other resource state.
 
-- [ ] **Step 7: Run documentation and privacy checks**
+### Documentation checklist
+
+- [ ] Logs `1.0` and Traces disabled are consistent in all four documents.
+- [ ] The fetch-span privacy reason and future safe-boundary requirement appear.
+- [ ] No proxy Worker is proposed for phase one.
+- [ ] Event sequences match the runtime catalog and flow tests.
+- [ ] Query Builder fields/operators and identifier discovery are exact.
+- [ ] Unique-marker privacy audit is executable.
+- [ ] Node 22+, `npm ci`, dry-run, migration gates, and Version IDs are used.
+- [ ] Production smoke is explicitly pending.
+
+---
+
+## Task 7: Final verification and report
+
+Run the complete fresh gate:
 
 ```powershell
-rg -n "webhookEventId|Queue|Logs|Traces|privacy|rollback" docs/operations/observability.md README.md
-rg -n "question:|answer:|userId:|groupId:|replyToken:" src/telemetry/logger.ts
-```
-
-Expected: the first command finds every operational topic; the second returns no matches.
-
-- [ ] **Step 8: Run final verification**
-
-```powershell
+npm.cmd ci
 npm.cmd run types:bindings:check
 npm.cmd test
 npm.cmd run typecheck
@@ -895,21 +589,26 @@ npm.cmd run deploy -- --dry-run
 git diff --check
 ```
 
-Expected:
-
-- binding type check exits 0;
-- all Vitest files and tests PASS;
-- TypeScript exits 0;
-- Wrangler dry-run exits 0 and lists Queue, D1, and AI bindings;
-- `git diff --check` prints no errors.
-
-- [ ] **Step 9: Review acceptance criteria**
-
-Check the implementation against every acceptance criterion in `docs/superpowers/specs/2026-07-25-observability-reliability-design.md`. Record any production-only smoke item as pending deployment; do not claim it passed from fake local endpoints.
-
-- [ ] **Step 10: Commit Task 5**
+Run contradiction/privacy scans:
 
 ```powershell
-git add src/index.ts README.md docs/operations/observability.md test/e2e/webhook-to-reply.test.ts
-git commit -m "docs: add observability operations runbook"
+rg -n "head_sampling_rate.?[:=].?0\.1|knownGoodDeployment|deployments list|console\.log\(JSON|string writer|sampled traces|Traces use 10%" README.md docs wrangler.jsonc test src
+rg -n "question:|answer:|userId:|groupId:|replyToken:|authorization:|accessToken:|secret:|error:" src/telemetry/logger.ts
 ```
+
+Expected:
+
+- locked install exits zero;
+- binding drift check exits zero;
+- the full Vitest suite passes;
+- TypeScript exits zero;
+- dry-run exits zero and lists Queue, D1, and AI;
+- `git diff --check` reports no whitespace errors;
+- contradiction scan returns no stale phase-one instructions;
+- telemetry scan finds no forbidden event fields;
+- production smoke remains recorded as pending.
+
+Write RED/GREEN evidence, files changed, deviations, unresolved concerns, and
+the pending production-only checks to
+`.superpowers/sdd/observability-final-fixes-report.md`. Do not commit; the
+controller owns Git index writes.

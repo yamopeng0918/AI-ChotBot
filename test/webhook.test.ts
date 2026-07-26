@@ -3,6 +3,7 @@ import { Miniflare } from "miniflare";
 
 import worker, { createWorker } from "../src/index";
 import { parseAdminCommand } from "../src/admin/commands";
+import type { TelemetryEvent } from "../src/telemetry/logger";
 import type { LineWebhookEvent } from "../src/line/types";
 import migrationSql from "../migrations/0002_group_admins.sql?raw";
 
@@ -226,5 +227,100 @@ describe("POST /webhooks/line queue publication", () => {
       "event-1",
       "event-1",
     ]);
+  });
+});
+
+describe("POST /webhooks/line telemetry", () => {
+  const env = {
+    LINE_CHANNEL_SECRET: "secret",
+    LINE_CHANNEL_ACCESS_TOKEN: "line-token",
+    LINE_GROUP_ID: "group-1",
+    GROUP_ADMINS_BOOTSTRAP_JSON: "",
+    MESSAGE_QUEUE: { send: vi.fn() },
+  } as never;
+
+  it("classifies a missing signature without reading the webhook body", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetryWorker = createWorker({ logger: { emit: (event) => events.push(event) } });
+
+    const response = await telemetryWorker.fetch(new Request("https://bot.test/webhooks/line", {
+      method: "POST",
+      body: "private webhook payload",
+    }), env, {} as never);
+
+    expect(response.status).toBe(401);
+    expect(events.at(-1)).toMatchObject({
+      event: "webhook.rejected",
+      stage: "webhook",
+      outcome: "failed",
+      errorType: "invalid_signature",
+    });
+    expect(JSON.stringify(events)).not.toContain("private webhook payload");
+  });
+
+  it("classifies an invalid signature without recording webhook data", async () => {
+    const events: TelemetryEvent[] = [];
+    const body = JSON.stringify({ events: [eligibleEvent()] });
+    const telemetryWorker = createWorker({ logger: { emit: (event) => events.push(event) } });
+
+    const response = await telemetryWorker.fetch(new Request("https://bot.test/webhooks/line", {
+      method: "POST",
+      headers: { "x-line-signature": "invalid-signature" },
+      body,
+    }), env, {} as never);
+
+    expect(response.status).toBe(401);
+    expect(events.at(-1)).toMatchObject({
+      event: "webhook.rejected",
+      stage: "webhook",
+      outcome: "failed",
+      errorType: "invalid_signature",
+    });
+    expect(JSON.stringify(events)).not.toContain(body);
+  });
+
+  it("classifies signed malformed JSON", async () => {
+    const events: TelemetryEvent[] = [];
+    const body = "not-json";
+    const telemetryWorker = createWorker({ logger: { emit: (event) => events.push(event) } });
+
+    const response = await telemetryWorker.fetch(new Request("https://bot.test/webhooks/line", {
+      method: "POST",
+      headers: { "x-line-signature": await sign(body, "secret") },
+      body,
+    }), env, {} as never);
+
+    expect(response.status).toBe(400);
+    expect(events.at(-1)).toMatchObject({
+      event: "webhook.rejected",
+      stage: "webhook",
+      outcome: "failed",
+      errorType: "invalid_json",
+    });
+  });
+
+  it("classifies queue publication failure without recording the provider error", async () => {
+    const events: TelemetryEvent[] = [];
+    const queueError = new Error("queue provider secret");
+    const telemetryWorker = createWorker({
+      logger: { emit: (event) => events.push(event) },
+      queue: { send: vi.fn().mockRejectedValue(queueError) },
+    });
+    const body = JSON.stringify({ events: [eligibleEvent()] });
+
+    const response = await telemetryWorker.fetch(new Request("https://bot.test/webhooks/line", {
+      method: "POST",
+      headers: { "x-line-signature": await sign(body, "secret") },
+      body,
+    }), env, {} as never);
+
+    expect(response.status).toBe(503);
+    expect(events.at(-1)).toMatchObject({
+      event: "webhook.enqueue.failed",
+      stage: "webhook",
+      outcome: "failed",
+      errorType: "queue_unavailable",
+    });
+    expect(JSON.stringify(events)).not.toContain(queueError.message);
   });
 });

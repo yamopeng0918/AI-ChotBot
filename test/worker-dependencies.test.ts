@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createWorker } from "../src/index";
 import type { Env } from "../src/config";
 import type { QuestionJob } from "../src/jobs/types";
+import type { TelemetryEvent } from "../src/telemetry/logger";
 
 const job: QuestionJob = {
   webhookEventId: "already-complete", replyToken: "reply", groupId: "group", userId: null,
@@ -91,5 +92,79 @@ describe("createWorker repository injection", () => {
     expect(lineCall).toBeDefined();
     const lineBody = JSON.parse(String(lineCall?.[1]?.body));
     expect(lineBody.messages[0].text).toBe("fallback answer");
+  });
+});
+
+describe("cron telemetry", () => {
+  it("emits correlated cleanup started and completed events", async () => {
+    const events: TelemetryEvent[] = [];
+    const repository = {
+      claim: vi.fn(), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(),
+      purgeExpired: vi.fn().mockResolvedValue(2),
+    };
+    const worker = createWorker({
+      questions: repository,
+      logger: { emit: (event) => events.push(event) },
+      now: () => new Date("2026-07-18T12:34:56.000Z"),
+    });
+
+    await worker.scheduled({} as ScheduledController, {} as Env);
+
+    expect(events.map((event) => event.event)).toEqual([
+      "cron.cleanup.started",
+      "cron.cleanup.completed",
+    ]);
+    expect(events[0]?.operationId).toEqual(expect.any(String));
+    expect(events[1]).toMatchObject({
+      stage: "cron",
+      outcome: "success",
+      operationId: events[0]?.operationId,
+    });
+  });
+
+  it("emits a failure classification then rethrows a stable sanitized error", async () => {
+    const events: TelemetryEvent[] = [];
+    const repository = {
+      claim: vi.fn(), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(),
+      purgeExpired: vi.fn().mockRejectedValue(new Error("D1 unavailable: credentials=secret")),
+    };
+    const worker = createWorker({
+      questions: repository,
+      logger: { emit: (event) => events.push(event) },
+    });
+
+    await expect(worker.scheduled({} as ScheduledController, {} as Env))
+      .rejects.toThrow("scheduled cleanup failed");
+    expect(events.at(-1)).toMatchObject({
+      event: "cron.cleanup.failed",
+      stage: "cron",
+      outcome: "failed",
+      errorType: "cron_cleanup_failed",
+    });
+    expect(JSON.stringify(events)).not.toContain("credentials=secret");
+  });
+});
+
+describe("queue boundary telemetry", () => {
+  it("classifies an unexpected processing exception before retrying the message", async () => {
+    const events: TelemetryEvent[] = [];
+    const malformedJob = { ...job, text: Symbol("queue boundary secret") } as unknown as QuestionJob;
+    const message = { body: malformedJob, ack: vi.fn(), retry: vi.fn() };
+    const worker = createWorker({
+      logger: { emit: (event) => events.push(event) },
+    });
+
+    await worker.queue({ messages: [message] } as never, {} as Env, {} as ExecutionContext);
+
+    expect(message.retry).toHaveBeenCalledWith({ delaySeconds: 1 });
+    expect(events.at(-1)).toMatchObject({
+      event: "queue.message.retry",
+      stage: "queue",
+      outcome: "retry",
+      webhookEventId: malformedJob.webhookEventId,
+      retryDelaySeconds: 1,
+      errorType: "unexpected_error",
+    });
+    expect(JSON.stringify(events)).not.toContain("queue boundary secret");
   });
 });

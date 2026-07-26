@@ -17,11 +17,12 @@ import { WeatherCacheRepository } from "./storage/weather-cache";
 import type { ProcessDependencies } from "./jobs/process-message";
 import { OpenMeteoWeatherService } from "./weather/openmeteo";
 import { D1MetricsRepository } from "./telemetry/metrics";
+import { createConsoleTelemetryLogger, type TelemetryEvent, type TelemetryLogger } from "./telemetry/logger";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
 
-type WorkerDependencies = {
+export type WorkerDependencies = {
   fetcher?: typeof fetch;
   now?: () => Date;
   queue?: Pick<Queue<QuestionJob>, "send">;
@@ -29,10 +30,18 @@ type WorkerDependencies = {
   answerService?: ProcessDependencies["answerService"];
   weatherService?: ProcessDependencies["weatherService"];
   metrics?: ProcessDependencies["metrics"];
+  logger?: TelemetryLogger;
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
   const app = new Hono<{ Bindings: Env }>();
+  const logger = overrides.logger ?? createConsoleTelemetryLogger();
+  const timestamp = () => (overrides.now?.() ?? new Date()).toISOString();
+  const emit = (event: Omit<TelemetryEvent, "timestamp">) => {
+    try {
+      logger.emit({ ...event, timestamp: timestamp() });
+    } catch {}
+  };
   const questionsFor = (env: Env): QuestionsDependency => {
     if (typeof overrides.questions === "function") return overrides.questions(env);
     return overrides.questions ?? new QuestionsRepository(env.DB);
@@ -44,16 +53,23 @@ app.get("/health", (context) => context.json({ status: "ok" }));
 
 app.post("/webhooks/line", async (context) => {
   const signature = context.req.header("x-line-signature");
-  if (!signature) return context.json({ error: "invalid signature" }, 401);
+  if (!signature) {
+    emit({ event: "webhook.rejected", stage: "webhook", outcome: "failed", errorType: "invalid_signature" });
+    return context.json({ error: "invalid signature" }, 401);
+  }
 
   const body = await context.req.text();
   const isValid = await verifyLineSignature(body, signature, context.env.LINE_CHANNEL_SECRET);
-  if (!isValid) return context.json({ error: "invalid signature" }, 401);
+  if (!isValid) {
+    emit({ event: "webhook.rejected", stage: "webhook", outcome: "failed", errorType: "invalid_signature" });
+    return context.json({ error: "invalid signature" }, 401);
+  }
 
   let payload: LineWebhookBody;
   try {
     payload = JSON.parse(body) as LineWebhookBody;
   } catch {
+    emit({ event: "webhook.rejected", stage: "webhook", outcome: "failed", errorType: "invalid_json" });
     return context.json({ error: "invalid JSON" }, 400);
   }
 
@@ -110,6 +126,7 @@ app.post("/webhooks/line", async (context) => {
       await (overrides.queue ?? context.env.MESSAGE_QUEUE).send(job);
     }
   } catch {
+    emit({ event: "webhook.enqueue.failed", stage: "webhook", outcome: "failed", errorType: "queue_unavailable" });
     return context.json({ error: "queue unavailable" }, 503);
   }
 
@@ -134,6 +151,7 @@ return {
       questions: questionsFor(env),
       groupSettings,
       metrics,
+      logger,
       pseudonymize: (userId: string | null) => pseudonymizeUserId(userId, env.ANALYTICS_HASH_KEY),
       now: overrides.now,
     };
@@ -144,11 +162,33 @@ return {
         if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
       } catch {
         message.retry({ delaySeconds: 1 });
+        emit({
+          event: "queue.message.retry",
+          stage: "queue",
+          outcome: "retry",
+          webhookEventId: message.body.webhookEventId,
+          retryDelaySeconds: 1,
+          errorType: "unexpected_error",
+        });
       }
     }
   },
   async scheduled(_controller, env) {
-    await questionsFor(env).purgeExpired((overrides.now?.() ?? new Date()).toISOString());
+    const operationId = crypto.randomUUID();
+    emit({ event: "cron.cleanup.started", stage: "cron", outcome: "success", operationId });
+    try {
+      await questionsFor(env).purgeExpired(timestamp());
+      emit({ event: "cron.cleanup.completed", stage: "cron", outcome: "success", operationId });
+    } catch {
+      emit({
+        event: "cron.cleanup.failed",
+        stage: "cron",
+        outcome: "failed",
+        operationId,
+        errorType: "cron_cleanup_failed",
+      });
+      throw new Error("scheduled cleanup failed");
+    }
   },
 } satisfies ExportedHandler<Env, QuestionJob>;
 }

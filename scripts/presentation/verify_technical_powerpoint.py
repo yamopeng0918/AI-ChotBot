@@ -73,6 +73,24 @@ def _require_named_terms(slide, prefix: str, terms: tuple[str, ...], errors: lis
             errors.append(f"Slide {slide_number} {prefix} must include {term}")
 
 
+def _require_named_keyword(slide, name: str, keyword: str, errors: list[str], slide_number: int) -> None:
+    shapes = _named(slide, name)
+    exact = [shape for shape in shapes if shape.name == name]
+    if len(shapes) != 1 or len(exact) != 1:
+        errors.append(f"Slide {slide_number} requires {name} exactly once (no copy suffix)")
+    elif not _native_text(exact[0]):
+        errors.append(f"Slide {slide_number} {name} must be a native non-empty text shape")
+    elif keyword.casefold() not in exact[0].text.casefold():
+        errors.append(f"Slide {slide_number} {name} must include {keyword}")
+
+
+def _require_named_line(slide, name: str, errors: list[str]) -> None:
+    shapes = _named(slide, name)
+    exact = [shape for shape in shapes if shape.name == name]
+    if len(shapes) != 1 or len(exact) != 1 or exact[0].shape_type != MSO_SHAPE_TYPE.LINE:
+        errors.append(f"Slide 4 requires {name} exactly once as a native LINE connector")
+
+
 def _validate_source(source_path: Path) -> tuple[list, list[str]]:
     try:
         slides = parse_markdown(source_path)
@@ -136,10 +154,12 @@ def verify_technical_presentation(pptx_path: Path, source_path: Path) -> list[st
     if len(connectors) < 6 or any(shape.shape_type != MSO_SHAPE_TYPE.LINE for shape in connectors):
         errors.append("Slide 3 needs at least six native architecture connectors")
     _require_named_terms(presentation.slides[3], "message-flow-step-", ("資料流程",), errors, 4, 6)
-    if len(_named(presentation.slides[3], "message-flow-connector-")) < 5:
-        errors.append("Slide 4 needs at least five message-flow connectors")
-    _require_named_terms(presentation.slides[5], "reliability-node-", ("retry", "dlq", "deduplication"), errors, 6)
-    _require_named_terms(presentation.slides[8], "data-node-", ("d1-work-record", "weather-cache", "group-settings", "metrics", "30-day-lifecycle"), errors, 9)
+    for connector in range(1, 6):
+        _require_named_line(presentation.slides[3], f"message-flow-connector-{connector}", errors)
+    for name, keyword in (("retry", "retry"), ("dlq", "dlq"), ("deduplication", "deduplication")):
+        _require_named_keyword(presentation.slides[5], f"reliability-node-{name}", keyword, errors, 6)
+    for name, keyword in (("question-record", "問題紀錄"), ("weather-cache", "weather cache"), ("group-settings", "group settings"), ("metrics", "metrics"), ("lifecycle", "lifecycle")):
+        _require_named_keyword(presentation.slides[8], f"data-node-{name}", keyword, errors, 9)
     _require_named_terms(presentation.slides[10], "observability-event-", ("可觀測事件",), errors, 11, 5)
     visible_11 = "\n".join(_shape_texts(presentation.slides[10]))
     if "webhookEventId" not in visible_11 or "operationId" not in visible_11:
@@ -148,9 +168,18 @@ def verify_technical_presentation(pptx_path: Path, source_path: Path) -> list[st
     for pattern, label in ((r"主線\s*134\s*通過", "主線 134 通過"), (r"知識搜尋\s*421\s*通過", "知識搜尋 421 通過"), (r"1 項.*超過\s*5 秒", "1 項超過 5 秒"), (r"設定檢查待更新", "設定檢查待更新")):
         if not re.search(pattern, quality):
             errors.append(f"Slide 12 needs quality-gate evidence: {label}")
-    _require_named_terms(presentation.slides[12], "knowledge-node-", ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer"), errors, 13)
+    for name in ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer"):
+        _require_named_keyword(presentation.slides[12], f"knowledge-node-{name}", name, errors, 13)
     _require_exact_text(presentation.slides[12], "development-status-13", "開發中", errors, 13, "development-status")
-    _require_named_terms(presentation.slides[13], "maturity-matrix-", ("已完成", "開發中", "待合併前驗證", "待正式環境驗證"), errors, 14, 1)
+    _require_named_keyword(presentation.slides[13], "maturity-matrix-14", "已完成", errors, 14)
+    maturity_text = "\n".join(
+        shape.text.strip()
+        for shape in _named(presentation.slides[13], "maturity-matrix-14")
+        if shape.name == "maturity-matrix-14" and _native_text(shape)
+    )
+    for state in ("開發中", "待合併前驗證", "待正式環境驗證"):
+        if state not in maturity_text:
+            errors.append(f"Slide 14 maturity-matrix-14 must include {state}")
     if re.search(r"\b\d+(?:\.\d+)?\s*%", "\n".join(_shape_texts(presentation.slides[13]))):
         errors.append("Slide 14 must not use percentage maturity")
     for step, bullet in enumerate(source_slides[15].bullets, start=1):

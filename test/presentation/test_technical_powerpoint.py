@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -16,6 +17,7 @@ from scripts.presentation.verify_technical_powerpoint import verify_technical_pr
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_PATH = ROOT / "docs/presentations/2026-07-30-technical-achievements-presentation.md"
+ONE_PIXEL_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0dIDAT\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
 
 
 class TechnicalSourceTests(unittest.TestCase):
@@ -42,6 +44,9 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         empty_special: tuple[int, str] | None = None, omit_special: tuple[int, str] | None = None,
         sensitive_location: str | None = None, quality_override: str | None = None,
         maturity_override: str | None = None, roadmap_override: str | None = None,
+        rename_special: tuple[int, str, str] | None = None,
+        message_connector_replacement: str | None = None,
+        duplicate_message_connector: bool = False,
     ) -> None:
         presentation = Presentation()
         presentation.slides._sldIdLst.clear()
@@ -58,7 +63,8 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         def special(slide_number: int, name: str, text: str) -> None:
             if omit_special == (slide_number, name):
                 return
-            self._add_text(presentation.slides[slide_number - 1].shapes, name, "" if empty_special == (slide_number, name) else text)
+            output_name = rename_special[2] if rename_special and rename_special[:2] == (slide_number, name) else name
+            self._add_text(presentation.slides[slide_number - 1].shapes, output_name, "" if empty_special == (slide_number, name) else text)
 
         for index in range(7):
             special(3, f"architecture-node-{index + 1}", f"架構節點 {index + 1}")
@@ -68,12 +74,22 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         for index in range(6):
             special(4, f"message-flow-step-{index + 1}", f"資料流程 {index + 1}")
         for index in range(5):
+            name = f"message-flow-connector-{index + 1}"
+            if index == 0 and message_connector_replacement == "textbox":
+                self._add_text(presentation.slides[3].shapes, name, "假 connector")
+            elif index == 0 and message_connector_replacement == "picture":
+                shape = presentation.slides[3].shapes.add_picture(BytesIO(ONE_PIXEL_PNG), Inches(1), Inches(1), Inches(1), Inches(.3))
+                shape.name = name
+            else:
+                connector = presentation.slides[3].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+                connector.name = name
+        if duplicate_message_connector:
             connector = presentation.slides[3].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
-            connector.name = f"message-flow-connector-{index + 1}"
+            connector.name = "message-flow-connector-1-copy"
         for name in ("retry", "dlq", "deduplication"):
             special(6, f"reliability-node-{name}", name)
-        for name in ("d1-work-record", "weather-cache", "group-settings", "metrics", "30-day-lifecycle"):
-            special(9, f"data-node-{name}", name)
+        for name, text in (("question-record", "D1 問題紀錄"), ("weather-cache", "weather cache"), ("group-settings", "group settings"), ("metrics", "metrics"), ("lifecycle", "lifecycle")):
+            special(9, f"data-node-{name}", text)
         special(11, "observability-correlation-webhook", "webhookEventId")
         special(11, "observability-correlation-operation", "operationId")
         for index in range(5):
@@ -142,6 +158,9 @@ class TechnicalVerifierContractTests(unittest.TestCase):
     def test_rejects_empty_architecture_node(self) -> None:
         self.assertIn("architecture-node", self._errors(empty_special=(3, "architecture-node-1")))
 
+    def test_rejects_renamed_reliability_node(self) -> None:
+        self.assertIn("reliability-node-retry", self._errors(rename_special=(6, "reliability-node-retry", "reliability-node-retry-copy")))
+
     def test_rejects_missing_message_flow_node(self) -> None:
         self.assertIn("message-flow-step", self._errors(omit_special=(4, "message-flow-step-1")))
 
@@ -150,6 +169,9 @@ class TechnicalVerifierContractTests(unittest.TestCase):
 
     def test_rejects_empty_data_node(self) -> None:
         self.assertIn("data-node", self._errors(empty_special=(9, "data-node-metrics")))
+
+    def test_rejects_renamed_data_node(self) -> None:
+        self.assertIn("data-node-question-record", self._errors(rename_special=(9, "data-node-question-record", "data-node-question-record-copy")))
 
     def test_rejects_empty_observability_event(self) -> None:
         self.assertIn("observability-event", self._errors(empty_special=(11, "observability-event-1")))
@@ -160,14 +182,29 @@ class TechnicalVerifierContractTests(unittest.TestCase):
     def test_rejects_missing_development_status_text(self) -> None:
         self.assertIn("development-status", self._errors(empty_special=(13, "development-status-13")))
 
+    def test_rejects_renamed_knowledge_node(self) -> None:
+        self.assertIn("knowledge-node-r2", self._errors(rename_special=(13, "knowledge-node-r2", "knowledge-node-r2-copy")))
+
     def test_rejects_maturity_matrix_missing_required_state(self) -> None:
         self.assertIn("maturity", self._errors(maturity_override="已完成｜開發中｜待驗證"))
+
+    def test_rejects_maturity_matrix_copy_suffix(self) -> None:
+        self.assertIn("maturity-matrix-14", self._errors(rename_special=(14, "maturity-matrix-14", "maturity-matrix-14-copy")))
 
     def test_rejects_percentage_maturity_matrix(self) -> None:
         self.assertIn("percentage", self._errors(maturity_override="已完成 80%｜開發中"))
 
     def test_rejects_english_roadmap_node(self) -> None:
         self.assertIn("roadmap-step-1", self._errors(roadmap_override="1. English step"))
+
+    def test_rejects_textbox_instead_of_message_flow_connector(self) -> None:
+        self.assertIn("message-flow-connector-1", self._errors(message_connector_replacement="textbox"))
+
+    def test_rejects_non_line_message_flow_connector(self) -> None:
+        self.assertIn("message-flow-connector-1", self._errors(message_connector_replacement="picture"))
+
+    def test_rejects_message_flow_connector_copy_suffix(self) -> None:
+        self.assertIn("message-flow-connector-1", self._errors(duplicate_message_connector=True))
 
 
 if __name__ == "__main__":

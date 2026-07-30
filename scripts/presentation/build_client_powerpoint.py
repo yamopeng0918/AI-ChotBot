@@ -447,7 +447,7 @@ def _build_cover(presentation: Presentation, content: SlideContent) -> None:
         3.78,
         3.74,
         0.68,
-        size=15,
+        size=16,
         fill=PANEL,
         line=TEAL,
         bold=True,
@@ -461,7 +461,7 @@ def _build_cover(presentation: Presentation, content: SlideContent) -> None:
             4.75,
             3.74,
             1.35,
-            size=14,
+            size=16,
             fill=PANEL,
             line=(TEAL, BLUE, AMBER)[index],
         )
@@ -592,7 +592,7 @@ def _build_flow_slide(
         content,
         top=4.02,
         available_height=2.65,
-        font_size=13.2,
+        font_size=16,
     )
 
 
@@ -622,8 +622,8 @@ def _build_technology_slide(
             0.72 + index * 4.03,
             2.08,
             3.8,
-            0.6,
-            size=11.5,
+            0.82,
+            size=16,
             fill=PANEL,
             line=(TEAL, BLUE, AMBER)[index],
         )
@@ -647,7 +647,7 @@ def _build_technology_slide(
             f"technology-group-{_normalized_name(group_name)}",
             group_name,
             left,
-            2.83,
+            3.05,
             3.8,
             0.32,
             size=12,
@@ -656,7 +656,7 @@ def _build_technology_slide(
         )
         rows = grouped_rows[group_name]
         gap = 0.08
-        available_height = 3.62
+        available_height = 3.4
         card_height = (
             available_height - gap * max(len(rows) - 1, 0)
         ) / max(len(rows), 1)
@@ -667,7 +667,7 @@ def _build_technology_slide(
                 f"tech-card-{_normalized_name(technology)}",
                 f"{technology}\n{status}",
                 left,
-                3.22 + index * (card_height + gap),
+                3.44 + index * (card_height + gap),
                 3.8,
                 card_height,
                 size=10.5 if len(rows) > 4 else 13,
@@ -726,7 +726,7 @@ def _build_status_slide(
         content,
         top=2.73,
         available_height=3.95,
-        font_size=14.3,
+        font_size=16,
     )
 
 
@@ -767,7 +767,7 @@ def _build_roadmap_slide(
         content,
         top=3.58,
         available_height=3.1,
-        font_size=12.5,
+        font_size=16,
     )
 
 

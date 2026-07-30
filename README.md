@@ -26,6 +26,19 @@ npm.cmd run deploy -- --dry-run
 The dry-run must list the `MESSAGE_QUEUE`, `DB`, and `AI` bindings without
 deploying.
 
+## Client PowerPoint
+
+Regenerate the editable client project-update deck, then validate its source
+coverage, slide geometry, notes, and native editable shapes:
+
+```powershell
+python scripts/presentation/build_client_powerpoint.py
+python scripts/presentation/verify_client_powerpoint.py
+```
+
+The delivery file is
+`docs/presentations/AI-ChotBot-project-progress-client.pptx`.
+
 ## Provision Cloudflare
 
 1. Authenticate:

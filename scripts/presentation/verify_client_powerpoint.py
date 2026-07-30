@@ -7,7 +7,7 @@ import re
 
 from pptx import Presentation
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
-from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
 from .build_client_powerpoint import parse_markdown
 
@@ -20,13 +20,11 @@ EXPECTED_BACKGROUND = "081A2E"
 EXPECTED_PRIMARY_TEXT = "FFFFFF"
 EXPECTED_ACCENT = "21D4B4"
 EXPECTED_FONT = "Microsoft JhengHei"
-PRIMARY_SHAPE_PREFIXES = (
-    "title-",
-    "conclusion-",
-    "bullet-",
-    "flow-node-",
-    "tech-card-",
-    "roadmap-step-",
+DECORATIVE_TEXT_PREFIXES = (
+    "date-",
+    "footer-",
+    "page-number-",
+    "slide-number-",
 )
 
 
@@ -113,13 +111,25 @@ def _shape_runs(shape):
             yield from paragraph.runs
 
 
+def _is_decorative_text_shape(shape) -> bool:
+    if shape.name.casefold().startswith(DECORATIVE_TEXT_PREFIXES):
+        return True
+    if not getattr(shape, "is_placeholder", False):
+        return False
+    return shape.placeholder_format.type in {
+        PP_PLACEHOLDER.DATE,
+        PP_PLACEHOLDER.FOOTER,
+        PP_PLACEHOLDER.SLIDE_NUMBER,
+    }
+
+
 def _primary_text_style_counts(presentation) -> tuple[int, int, int]:
     total_weight = 0
     white_weight = 0
     expected_font_weight = 0
     for slide in presentation.slides:
         for shape in _iter_shapes(slide.shapes):
-            if not shape.name.casefold().startswith(PRIMARY_SHAPE_PREFIXES):
+            if _is_decorative_text_shape(shape):
                 continue
             for run in _shape_runs(shape):
                 weight = len(run.text.strip())
@@ -133,25 +143,35 @@ def _primary_text_style_counts(presentation) -> tuple[int, int, int]:
     return total_weight, white_weight, expected_font_weight
 
 
-def _has_expected_accent(presentation) -> bool:
-    for slide in presentation.slides:
-        for shape in _iter_shapes(slide.shapes):
-            try:
-                if (
-                    shape.fill.type == MSO_FILL_TYPE.SOLID
-                    and _rgb_value(shape.fill.fore_color) == EXPECTED_ACCENT
-                ):
-                    return True
-            except (AttributeError, TypeError, ValueError):
-                pass
-            try:
-                if _rgb_value(shape.line.color) == EXPECTED_ACCENT:
-                    return True
-            except (AttributeError, TypeError, ValueError):
-                pass
-            for run in _shape_runs(shape):
-                if _rgb_value(run.font.color) == EXPECTED_ACCENT:
-                    return True
+def _has_expected_accent(
+    slide, slide_width: int, slide_height: int
+) -> bool:
+    for shape in _iter_shapes(slide.shapes):
+        if (
+            shape.width <= 0
+            or shape.height <= 0
+            or shape.left >= slide_width
+            or shape.top >= slide_height
+            or shape.left + shape.width <= 0
+            or shape.top + shape.height <= 0
+        ):
+            continue
+        try:
+            if (
+                shape.fill.type == MSO_FILL_TYPE.SOLID
+                and _rgb_value(shape.fill.fore_color) == EXPECTED_ACCENT
+            ):
+                return True
+        except (AttributeError, TypeError, ValueError):
+            pass
+        try:
+            if _rgb_value(shape.line.color) == EXPECTED_ACCENT:
+                return True
+        except (AttributeError, TypeError, ValueError):
+            pass
+        for run in _shape_runs(shape):
+            if _rgb_value(run.font.color) == EXPECTED_ACCENT:
+                return True
     return False
 
 
@@ -185,10 +205,6 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
         errors.append(f"Expected 14 slides, found {len(presentation.slides)}")
     if abs(presentation.slide_width * 9 - presentation.slide_height * 16) > 10:
         errors.append("Presentation aspect ratio must be 16:9")
-    if not _has_expected_accent(presentation):
-        errors.append(
-            f"Presentation must include at least one {EXPECTED_ACCENT} teal accent"
-        )
 
     total_text, white_text, expected_font_text = _primary_text_style_counts(
         presentation
@@ -212,16 +228,31 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
             errors.append(
                 f"Slide {slide_number} background must be {EXPECTED_BACKGROUND}"
             )
+        if not _has_expected_accent(
+            slide, presentation.slide_width, presentation.slide_height
+        ):
+            errors.append(
+                f"Slide {slide_number} must include a visible "
+                f"{EXPECTED_ACCENT} teal accent"
+            )
         if source_slide.title not in texts:
             errors.append(f"Slide {slide_number} title does not match the source")
         if not notes:
             errors.append(f"Slide {slide_number} speaker notes are empty")
+        elif source_slide.speaker_notes not in notes:
+            errors.append(
+                f"Slide {slide_number} notes must contain the source speaker notes"
+            )
 
         conclusions = _named_shapes(slide, "conclusion-")
         if len(conclusions) != 1 or not _is_native_text_shape(conclusions[0]):
             errors.append(
                 f"Slide {slide_number} must contain exactly one native "
                 "conclusion- text shape"
+            )
+        elif conclusions[0].text.strip() != source_slide.bullets[0]:
+            errors.append(
+                f"Slide {slide_number} conclusion must equal the source conclusion"
             )
         bullets = _named_shapes(slide, "bullet-")
         if not 3 <= len(bullets) <= 5:
@@ -231,6 +262,11 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
         if any(not _is_native_text_shape(shape) for shape in bullets):
             errors.append(
                 f"Slide {slide_number} bullet- items must be native text shapes"
+            )
+        elif [shape.text.strip() for shape in bullets] != source_slide.bullets:
+            errors.append(
+                f"Slide {slide_number} bullet text and order must match "
+                "the source bullets"
             )
 
         for shape in _iter_shapes(slide.shapes):

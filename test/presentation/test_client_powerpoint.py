@@ -106,8 +106,13 @@ class PresentationVerifierTests(unittest.TestCase):
         primary_text_color: str | None = None,
         primary_font_name: str | None = None,
         accent_color: str | None = None,
+        missing_accent_slide: int | None = None,
+        invisible_accent_slide: int | None = None,
         title_override: str | None = None,
         include_notes: bool = True,
+        bullet_text_override: str | None = None,
+        conclusion_text_override: str | None = None,
+        notes_text_override: str | None = None,
         missing_conclusion_slide: int | None = None,
         bullet_count_by_slide: dict[int, int] | None = None,
         flow_node_count: int = 6,
@@ -121,6 +126,7 @@ class PresentationVerifierTests(unittest.TestCase):
         include_grouped_sensitive_text: bool = False,
         include_grouped_sensitive_table: bool = False,
         include_out_of_bounds_shape: bool = False,
+        include_unnamed_wrong_style: bool = False,
     ) -> None:
         source_slides = parse_markdown(SOURCE_PATH)
         presentation = Presentation()
@@ -155,19 +161,34 @@ class PresentationVerifierTests(unittest.TestCase):
                 self._add_text(
                     slide.shapes,
                     f"conclusion-{source_slide.number}",
-                    f"Conclusion {source_slide.number}",
+                    (
+                        conclusion_text_override
+                        if source_slide.number == 2 and conclusion_text_override
+                        else source_slide.bullets[0]
+                    ),
                     0.5,
                     0.8,
                     8,
                     color=primary_text_color,
                     font_name=primary_font_name,
                 )
-            bullet_count = (bullet_count_by_slide or {}).get(source_slide.number, 3)
-            for bullet_index in range(bullet_count):
+            bullets = list(source_slide.bullets)
+            requested_count = (bullet_count_by_slide or {}).get(
+                source_slide.number, len(bullets)
+            )
+            bullets = bullets[:requested_count]
+            if requested_count > len(bullets):
+                bullets.extend(
+                    f"Extra key point {number}"
+                    for number in range(len(bullets) + 1, requested_count + 1)
+                )
+            if source_slide.number == 2 and bullet_text_override:
+                bullets[0] = bullet_text_override
+            for bullet_index, bullet_text in enumerate(bullets):
                 self._add_text(
                     slide.shapes,
                     f"bullet-{source_slide.number}-{bullet_index + 1}",
-                    f"Key point {bullet_index + 1}",
+                    bullet_text,
                     0.5,
                     1.2 + bullet_index * 0.35,
                     4,
@@ -175,7 +196,28 @@ class PresentationVerifierTests(unittest.TestCase):
                     font_name=primary_font_name,
                 )
             if include_notes or source_slide.number != 2:
-                slide.notes_slide.notes_text_frame.text = "Speaker guidance"
+                slide.notes_slide.notes_text_frame.text = (
+                    notes_text_override
+                    if source_slide.number == 2 and notes_text_override
+                    else source_slide.speaker_notes
+                )
+            if source_slide.number != missing_accent_slide:
+                accent = slide.shapes.add_shape(
+                    MSO_SHAPE.RECTANGLE,
+                    Inches(
+                        20
+                        if source_slide.number == invisible_accent_slide
+                        else 12
+                    ),
+                    Inches(0.2),
+                    Inches(0.2),
+                    Inches(0.2),
+                )
+                accent.name = f"accent-{source_slide.number}"
+                accent.fill.solid()
+                accent.fill.fore_color.rgb = RGBColor.from_string(
+                    accent_color or self.TEAL
+                )
             if source_slide.number == 5:
                 for node in range(flow_node_count):
                     name = f"flow-node-{node + 1}"
@@ -259,12 +301,6 @@ class PresentationVerifierTests(unittest.TestCase):
                         )
 
         first_slide = presentation.slides[0]
-        accent = first_slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE, Inches(12), Inches(0.2), Inches(0.2), Inches(0.2)
-        )
-        accent.name = "accent-1"
-        accent.fill.solid()
-        accent.fill.fore_color.rgb = RGBColor.from_string(accent_color or self.TEAL)
         if include_sensitive_text:
             self._add_text(
                 first_slide.shapes, "extra-sensitive", "access_token", 0.5, 5
@@ -291,6 +327,18 @@ class PresentationVerifierTests(unittest.TestCase):
         if include_out_of_bounds_shape:
             self._add_text(
                 first_slide.shapes, "overflow", "Overflow", 14, 1, 1, 0.3
+            )
+        if include_unnamed_wrong_style:
+            self._add_text(
+                presentation.slides[1].shapes,
+                "Visible body copy",
+                "Unstyled visible content " * 100,
+                0.5,
+                5,
+                10,
+                1,
+                color="000000",
+                font_name="Arial",
             )
         presentation.save(destination)
 
@@ -326,9 +374,40 @@ class PresentationVerifierTests(unittest.TestCase):
     def test_rejects_deck_without_teal_accent(self) -> None:
         self.assertIn("21d4b4", self._errors(accent_color="FF0000"))
 
+    def test_rejects_second_slide_without_teal_accent(self) -> None:
+        self.assertIn("slide 2", self._errors(missing_accent_slide=2))
+
+    def test_rejects_second_slide_with_off_canvas_teal_accent(self) -> None:
+        self.assertIn(
+            "21d4b4", self._errors(invisible_accent_slide=2)
+        )
+
     def test_rejects_wrong_primary_font(self) -> None:
         self.assertIn(
             "microsoft jhenghei", self._errors(primary_font_name="Arial")
+        )
+
+    def test_rejects_unnamed_visible_black_arial_text(self) -> None:
+        errors = self._errors(include_unnamed_wrong_style=True)
+        self.assertIn("white", errors)
+        self.assertIn("microsoft jhenghei", errors)
+
+    def test_rejects_english_bullet_substitution(self) -> None:
+        self.assertIn(
+            "source bullet",
+            self._errors(bullet_text_override="English replacement bullet"),
+        )
+
+    def test_rejects_english_conclusion_substitution(self) -> None:
+        self.assertIn(
+            "source conclusion",
+            self._errors(conclusion_text_override="English conclusion"),
+        )
+
+    def test_rejects_english_notes_substitution(self) -> None:
+        self.assertIn(
+            "source speaker notes",
+            self._errors(notes_text_override="English speaker guidance"),
         )
 
     def test_rejects_missing_flow_node_shape(self) -> None:

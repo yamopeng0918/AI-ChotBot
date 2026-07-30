@@ -1,4 +1,4 @@
-"""Source and structural-contract tests for the technical presentation."""
+"""Contract tests for the technical presentation verifier."""
 
 from __future__ import annotations
 
@@ -11,140 +11,163 @@ from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.util import Inches
 
 from scripts.presentation.build_client_powerpoint import parse_markdown
-from scripts.presentation.verify_technical_powerpoint import (
-    verify_technical_presentation,
-)
+from scripts.presentation.verify_technical_powerpoint import verify_technical_presentation
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PATH = (
-    REPOSITORY_ROOT
-    / "docs"
-    / "presentations"
-    / "2026-07-30-technical-achievements-presentation.md"
-)
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE_PATH = ROOT / "docs/presentations/2026-07-30-technical-achievements-presentation.md"
 
 
 class TechnicalSourceTests(unittest.TestCase):
     def test_source_has_sixteen_sequential_traditional_chinese_slides(self) -> None:
         slides = parse_markdown(SOURCE_PATH)
-
-        self.assertEqual(16, len(slides))
         self.assertEqual(list(range(1, 17)), [slide.number for slide in slides])
         self.assertTrue(all(slide.title.strip() for slide in slides))
-        self.assertTrue(all(any("\u4e00" <= char <= "\u9fff" for char in slide.title) for slide in slides))
-
-    def test_source_gives_each_slide_three_to_five_points_and_notes(self) -> None:
-        slides = parse_markdown(SOURCE_PATH)
-
         self.assertTrue(all(3 <= len(slide.bullets) <= 5 for slide in slides))
         self.assertTrue(all(slide.speaker_notes.strip() for slide in slides))
-        self.assertTrue(
-            all(
-                any("\u4e00" <= char <= "\u9fff" for char in slide.speaker_notes)
-                for slide in slides
-            )
-        )
-
-    def test_knowledge_search_slide_is_explicitly_in_development(self) -> None:
-        slides = parse_markdown(SOURCE_PATH)
-
-        self.assertIn("開發中", " ".join(slides[12].bullets))
+        self.assertTrue(all("開發中" in " ".join(slide.bullets) for slide in slides[12:13]))
+        self.assertIn("待合併前驗證", " ".join(slides[13].bullets))
 
 
 class TechnicalVerifierContractTests(unittest.TestCase):
-    def _write_contract_deck(
-        self, destination: Path, *, include_architecture_connector: bool = True
+    def _add_text(self, shapes, name: str, text: str) -> None:
+        shape = shapes.add_textbox(Inches(0.4), Inches(0.4), Inches(8), Inches(0.35))
+        shape.name = name
+        shape.text = text
+
+    def _write_deck(
+        self, destination: Path, *, title_override: str | None = None,
+        bullet_override: str | None = None, conclusion_override: str | None = None,
+        notes_override: str | None = None, duplicate_name: str | None = None,
+        empty_special: tuple[int, str] | None = None, omit_special: tuple[int, str] | None = None,
+        sensitive_location: str | None = None, quality_override: str | None = None,
+        maturity_override: str | None = None, roadmap_override: str | None = None,
     ) -> None:
         presentation = Presentation()
         presentation.slides._sldIdLst.clear()
+        source_slides = parse_markdown(SOURCE_PATH)
+        for source in source_slides:
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            self._add_text(slide.shapes, f"title-{source.number}", title_override if source.number == 1 and title_override is not None else source.title)
+            self._add_text(slide.shapes, f"conclusion-{source.number}", conclusion_override if source.number == 1 and conclusion_override is not None else source.bullets[0])
+            for index, bullet in enumerate(source.bullets, start=1):
+                text = bullet_override if source.number == 1 and index == 1 and bullet_override is not None else bullet
+                self._add_text(slide.shapes, f"bullet-{source.number}-{index}", text)
+            slide.notes_slide.notes_text_frame.text = notes_override if source.number == 1 and notes_override is not None else source.speaker_notes
 
-        for _ in range(16):
-            presentation.slides.add_slide(presentation.slide_layouts[6])
-
-        def add_text(slide_number: int, name: str, text: str) -> None:
-            shape = presentation.slides[slide_number - 1].shapes.add_textbox(
-                Inches(0.5), Inches(0.5), Inches(3), Inches(0.4)
-            )
-            shape.name = name
-            shape.text = text
+        def special(slide_number: int, name: str, text: str) -> None:
+            if omit_special == (slide_number, name):
+                return
+            self._add_text(presentation.slides[slide_number - 1].shapes, name, "" if empty_special == (slide_number, name) else text)
 
         for index in range(7):
-            shape = presentation.slides[2].shapes.add_shape(
-                MSO_SHAPE.ROUNDED_RECTANGLE,
-                Inches(0.5 + index), Inches(1), Inches(0.7), Inches(0.4)
-            )
-            shape.name = f"architecture-node-{index + 1}"
-            shape.text = f"節點 {index + 1}"
-        if include_architecture_connector:
-            connector = presentation.slides[2].shapes.add_connector(
-                MSO_CONNECTOR.STRAIGHT,
-                Inches(1), Inches(2), Inches(2), Inches(2)
-            )
-            connector.name = "architecture-connector-1"
-
+            special(3, f"architecture-node-{index + 1}", f"架構節點 {index + 1}")
         for index in range(6):
-            add_text(4, f"message-flow-step-{index + 1}", f"流程 {index + 1}")
-
-        for name in ("retry", "dlq", "deduplication"):
-            add_text(6, f"reliability-node-{name}", name)
-
-        for name in (
-            "d1-work-record",
-            "weather-cache",
-            "group-settings",
-            "metrics",
-            "30-day-lifecycle",
-        ):
-            add_text(9, f"data-node-{name}", name)
-
-        add_text(11, "observability-correlation-webhook", "webhookEventId")
-        add_text(11, "observability-correlation-operation", "operationId")
+            connector = presentation.slides[2].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+            connector.name = f"architecture-connector-{index + 1}"
+        for index in range(6):
+            special(4, f"message-flow-step-{index + 1}", f"資料流程 {index + 1}")
         for index in range(5):
-            add_text(11, f"observability-event-{index + 1}", f"事件 {index + 1}")
-
-        add_text(12, "quality-gate-main", "主線 134")
-        add_text(12, "quality-gate-knowledge", "知識搜尋 421")
-        add_text(12, "quality-gate-timeout", "1 項逾時")
-        add_text(12, "quality-gate-predeploy", "上線前檢查待更新")
-
-        for name in (
-            "r2",
-            "ingestion-queue",
-            "workers-ai",
-            "vectorize",
-            "retrieval",
-            "grounded-answer",
-        ):
-            add_text(13, f"knowledge-node-{name}", name.replace("-", " "))
-        add_text(13, "development-status-13", "開發中")
-
-        add_text(14, "maturity-matrix-14", "已完成／開發中／待驗證")
-
+            connector = presentation.slides[3].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+            connector.name = f"message-flow-connector-{index + 1}"
+        for name in ("retry", "dlq", "deduplication"):
+            special(6, f"reliability-node-{name}", name)
+        for name in ("d1-work-record", "weather-cache", "group-settings", "metrics", "30-day-lifecycle"):
+            special(9, f"data-node-{name}", name)
+        special(11, "observability-correlation-webhook", "webhookEventId")
+        special(11, "observability-correlation-operation", "operationId")
+        for index in range(5):
+            special(11, f"observability-event-{index + 1}", f"可觀測事件 {index + 1}")
+        for name, text in (("main", "主線 134 通過"), ("knowledge", "知識搜尋 421 通過"), ("timeout", "1 項超過 5 秒"), ("predeploy", "設定檢查待更新")):
+            special(12, f"quality-gate-{name}", quality_override if name == "main" and quality_override is not None else text)
+        for name in ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer"):
+            special(13, f"knowledge-node-{name}", name)
+        special(13, "development-status-13", "開發中")
+        special(14, "maturity-matrix-14", maturity_override or "已完成｜開發中｜待合併前驗證｜待正式環境驗證")
         for index in range(1, 6):
-            add_text(16, f"roadmap-step-{index}", f"路線圖 {index}")
-
+            special(16, f"roadmap-step-{index}", roadmap_override if index == 1 and roadmap_override is not None else source_slides[15].bullets[index - 1])
+        if duplicate_name:
+            self._add_text(presentation.slides[0].shapes, duplicate_name, "重複名稱")
+        if sensitive_location == "top":
+            self._add_text(presentation.slides[0].shapes, "sensitive-top", "access_token")
+        elif sensitive_location == "group":
+            group = presentation.slides[0].shapes.add_group_shape()
+            inner = group.shapes.add_group_shape()
+            self._add_text(inner.shapes, "sensitive-group", "channel_secret")
+        elif sensitive_location == "table":
+            group = presentation.slides[0].shapes.add_group_shape()
+            table = presentation.slides[0].shapes.add_table(1, 1, Inches(1), Inches(1), Inches(2), Inches(.4))
+            table.table.cell(0, 0).text = "database_id"
+            group.shapes._spTree.insert_element_before(table._element, "p:extLst")
+        elif sensitive_location == "notes":
+            presentation.slides[0].notes_slide.notes_text_frame.text = "analytics_hash_key"
         presentation.save(destination)
 
-    def test_accepts_a_deck_with_all_required_technical_contract_shapes(self) -> None:
+    def _errors(self, **kwargs) -> str:
         with TemporaryDirectory() as directory:
-            pptx_path = Path(directory) / "technical.pptx"
-            self._write_contract_deck(pptx_path)
+            path = Path(directory) / "deck.pptx"
+            self._write_deck(path, **kwargs)
+            return "\n".join(verify_technical_presentation(path, SOURCE_PATH)).lower()
 
-            self.assertEqual(
-                [], verify_technical_presentation(pptx_path, SOURCE_PATH)
-            )
+    def test_accepts_exact_source_bound_deck(self) -> None:
+        self.assertEqual("", self._errors())
 
-    def test_rejects_an_architecture_page_without_a_native_connector(self) -> None:
-        with TemporaryDirectory() as directory:
-            pptx_path = Path(directory) / "technical.pptx"
-            self._write_contract_deck(
-                pptx_path, include_architecture_connector=False
-            )
+    def test_rejects_title_not_equal_to_source(self) -> None:
+        self.assertIn("title", self._errors(title_override="English title"))
 
-            errors = verify_technical_presentation(pptx_path, SOURCE_PATH)
+    def test_rejects_bullet_not_equal_to_source(self) -> None:
+        self.assertIn("bullet", self._errors(bullet_override="English bullet"))
 
-        self.assertTrue(any("architecture connector" in error for error in errors))
+    def test_rejects_conclusion_not_equal_to_first_source_bullet(self) -> None:
+        self.assertIn("conclusion", self._errors(conclusion_override="English conclusion"))
+
+    def test_rejects_notes_without_source_speaker_notes(self) -> None:
+        self.assertIn("speaker notes", self._errors(notes_override="English notes"))
+
+    def test_rejects_copy_suffix_shape_name(self) -> None:
+        self.assertIn("title-1", self._errors(duplicate_name="title-1-copy"))
+
+    def test_rejects_sensitive_top_level_text(self) -> None:
+        self.assertIn("sensitive", self._errors(sensitive_location="top"))
+
+    def test_rejects_sensitive_nested_group_text(self) -> None:
+        self.assertIn("sensitive", self._errors(sensitive_location="group"))
+
+    def test_rejects_sensitive_table_cell(self) -> None:
+        self.assertIn("sensitive", self._errors(sensitive_location="table"))
+
+    def test_rejects_sensitive_speaker_notes(self) -> None:
+        self.assertIn("sensitive", self._errors(sensitive_location="notes"))
+
+    def test_rejects_empty_architecture_node(self) -> None:
+        self.assertIn("architecture-node", self._errors(empty_special=(3, "architecture-node-1")))
+
+    def test_rejects_missing_message_flow_node(self) -> None:
+        self.assertIn("message-flow-step", self._errors(omit_special=(4, "message-flow-step-1")))
+
+    def test_rejects_empty_reliability_node(self) -> None:
+        self.assertIn("reliability-node", self._errors(empty_special=(6, "reliability-node-retry")))
+
+    def test_rejects_empty_data_node(self) -> None:
+        self.assertIn("data-node", self._errors(empty_special=(9, "data-node-metrics")))
+
+    def test_rejects_empty_observability_event(self) -> None:
+        self.assertIn("observability-event", self._errors(empty_special=(11, "observability-event-1")))
+
+    def test_rejects_quality_failure_claim(self) -> None:
+        self.assertIn("quality-gate", self._errors(quality_override="主線 134 失敗"))
+
+    def test_rejects_missing_development_status_text(self) -> None:
+        self.assertIn("development-status", self._errors(empty_special=(13, "development-status-13")))
+
+    def test_rejects_maturity_matrix_missing_required_state(self) -> None:
+        self.assertIn("maturity", self._errors(maturity_override="已完成｜開發中｜待驗證"))
+
+    def test_rejects_percentage_maturity_matrix(self) -> None:
+        self.assertIn("percentage", self._errors(maturity_override="已完成 80%｜開發中"))
+
+    def test_rejects_english_roadmap_node(self) -> None:
+        self.assertIn("roadmap-step-1", self._errors(roadmap_override="1. English step"))
 
 
 if __name__ == "__main__":

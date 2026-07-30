@@ -609,6 +609,13 @@ def _technology_group(row: TableRow) -> str:
     return "主線能力"
 
 
+TECHNOLOGY_GROUP_LAYOUT = (
+    ("主線能力", "core-capabilities", 0.72, TEAL),
+    ("知識搜尋", "knowledge-search", 4.75, BLUE),
+    ("工程工具", "engineering-tools", 8.78, AMBER),
+)
+
+
 def _build_technology_slide(
     presentation: Presentation, content: SlideContent
 ) -> None:
@@ -636,15 +643,10 @@ def _build_technology_slide(
     for row in content.table_rows:
         grouped_rows[_technology_group(row)].append(row)
 
-    group_layout = (
-        ("主線能力", 0.72, TEAL),
-        ("知識搜尋", 4.75, BLUE),
-        ("工程工具", 8.78, AMBER),
-    )
-    for group_name, left, color in group_layout:
+    for group_name, group_slug, left, color in TECHNOLOGY_GROUP_LAYOUT:
         _add_text(
             slide,
-            f"technology-group-{_normalized_name(group_name)}",
+            f"technology-group-{group_slug}",
             group_name,
             left,
             3.05,
@@ -670,7 +672,7 @@ def _build_technology_slide(
                 3.44 + index * (card_height + gap),
                 3.8,
                 card_height,
-                size=10.5 if len(rows) > 4 else 13,
+                size=12,
                 fill=PANEL,
                 line=color,
                 bold=True,
@@ -751,12 +753,12 @@ def _build_roadmap_slide(
         _add_card(
             slide,
             f"roadmap-step-{index}",
-            bullet,
+            roadmap_label(bullet),
             left,
             2.22,
             2.14,
             0.92,
-            size=10.5,
+            size=16,
             fill=PANEL,
             line=TEAL if index <= 3 else BLUE,
             bold=True,
@@ -769,6 +771,14 @@ def _build_roadmap_slide(
         available_height=3.1,
         font_size=16,
     )
+
+
+def roadmap_label(bullet: str) -> str:
+    """Return the compact numbered title used by a roadmap node."""
+    match = re.match(r"^(?P<number>\d+)\.\s*(?P<title>[^：:]+)", bullet)
+    if not match:
+        raise ValueError(f"Roadmap bullet lacks a numbered title: {bullet}")
+    return f"{match.group('number')} {match.group('title').strip()}"
 
 
 def _notes_for_slide(content: SlideContent) -> str:
@@ -789,6 +799,8 @@ def build_presentation(source_path: Path, output_path: Path) -> None:
     contents = parse_markdown(source_path)
     if len(contents) != 14:
         raise ValueError(f"Expected 14 source slides, found {len(contents)}")
+    if [content.number for content in contents] != list(range(1, 15)):
+        raise ValueError("Source slide numbers must be exactly 1..14 in order")
 
     presentation = Presentation()
     presentation.slide_width = SLIDE_WIDTH

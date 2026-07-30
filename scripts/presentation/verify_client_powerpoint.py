@@ -10,9 +10,9 @@ from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
 try:
-    from .build_client_powerpoint import parse_markdown
+    from .build_client_powerpoint import STATUS_LABELS, parse_markdown, roadmap_label
 except ImportError:  # Direct execution: python scripts/presentation/verify_*.py
-    from build_client_powerpoint import parse_markdown
+    from build_client_powerpoint import STATUS_LABELS, parse_markdown, roadmap_label
 
 
 SENSITIVE_IDENTIFIER = re.compile(
@@ -126,24 +126,51 @@ def _is_decorative_text_shape(shape) -> bool:
     }
 
 
-def _primary_text_style_counts(presentation) -> tuple[int, int, int]:
+def _shape_is_visible(shape, slide_width: int, slide_height: int) -> bool:
+    return (
+        shape.width > 0
+        and shape.height > 0
+        and shape.left < slide_width
+        and shape.top < slide_height
+        and shape.left + shape.width > 0
+        and shape.top + shape.height > 0
+    )
+
+
+def _primary_text_style_counts(
+    slide, slide_width: int, slide_height: int
+) -> tuple[int, int, int]:
     total_weight = 0
     white_weight = 0
     expected_font_weight = 0
-    for slide in presentation.slides:
-        for shape in _iter_shapes(slide.shapes):
-            if _is_decorative_text_shape(shape):
+    for shape in _iter_shapes(slide.shapes):
+        if (
+            _is_decorative_text_shape(shape)
+            or not _shape_is_visible(shape, slide_width, slide_height)
+        ):
+            continue
+        for run in _shape_runs(shape):
+            weight = len(run.text.strip())
+            if not weight:
                 continue
-            for run in _shape_runs(shape):
-                weight = len(run.text.strip())
-                if not weight:
-                    continue
-                total_weight += weight
-                if _rgb_value(run.font.color) == EXPECTED_PRIMARY_TEXT:
-                    white_weight += weight
-                if (run.font.name or "").casefold() == EXPECTED_FONT.casefold():
-                    expected_font_weight += weight
+            total_weight += weight
+            if _rgb_value(run.font.color) == EXPECTED_PRIMARY_TEXT:
+                white_weight += weight
+            if (run.font.name or "").casefold() == EXPECTED_FONT.casefold():
+                expected_font_weight += weight
     return total_weight, white_weight, expected_font_weight
+
+
+def _has_minimum_declared_font_size(shape, minimum_points: float) -> bool:
+    text_runs = [
+        run
+        for run in _shape_runs(shape)
+        if run.text.strip()
+    ]
+    return bool(text_runs) and all(
+        run.font.size is not None and run.font.size.pt >= minimum_points
+        for run in text_runs
+    )
 
 
 def _has_expected_accent(
@@ -204,22 +231,17 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
     source_slides = parse_markdown(source_path)
     errors: list[str] = []
 
+    source_numbers = [slide.number for slide in source_slides]
+    if len(source_slides) != 14:
+        errors.append(
+            f"Source must contain exactly 14 slides, found {len(source_slides)}"
+        )
+    if source_numbers != list(range(1, 15)):
+        errors.append("Source slide numbers must be exactly 1..14 in order")
     if len(presentation.slides) != 14:
         errors.append(f"Expected 14 slides, found {len(presentation.slides)}")
     if abs(presentation.slide_width * 9 - presentation.slide_height * 16) > 10:
         errors.append("Presentation aspect ratio must be 16:9")
-
-    total_text, white_text, expected_font_text = _primary_text_style_counts(
-        presentation
-    )
-    if not total_text or white_text / total_text < 0.75:
-        errors.append(
-            "At least 75% of primary text must be white (F4F8FC)"
-        )
-    if not total_text or expected_font_text / total_text < 0.75:
-        errors.append(
-            f"At least 75% of primary text must use {EXPECTED_FONT}"
-        )
 
     for index, source_slide in enumerate(source_slides):
         if index >= len(presentation.slides):
@@ -229,6 +251,19 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
         texts = _shape_texts(slide)
         notes = _notes_text(slide)
 
+        total_text, white_text, expected_font_text = _primary_text_style_counts(
+            slide, presentation.slide_width, presentation.slide_height
+        )
+        if not total_text or white_text / total_text < 0.75:
+            errors.append(
+                f"Slide {slide_number}: at least 75% of visible primary text "
+                f"must be white ({EXPECTED_PRIMARY_TEXT})"
+            )
+        if not total_text or expected_font_text / total_text < 0.75:
+            errors.append(
+                f"Slide {slide_number}: at least 75% of visible primary text "
+                f"must use {EXPECTED_FONT}"
+            )
         if _slide_background_rgb(slide) != EXPECTED_BACKGROUND:
             errors.append(
                 f"Slide {slide_number} background must be {EXPECTED_BACKGROUND}"
@@ -273,6 +308,19 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
                 f"Slide {slide_number} bullet text and order must match "
                 "the source bullets"
             )
+        for prefix, minimum_points in (
+            ("conclusion-", 16),
+            ("bullet-", 16),
+            ("cover-value-proposition-", 16),
+            ("tech-card-", 12),
+            ("roadmap-step-", 16),
+        ):
+            for shape in _named_shapes(slide, prefix):
+                if not _has_minimum_declared_font_size(shape, minimum_points):
+                    errors.append(
+                        f"Slide {slide_number} {shape.name} text must declare "
+                        f"a font size of at least {minimum_points}pt"
+                    )
 
         for shape in _iter_shapes(slide.shapes):
             if _shape_is_outside_slide(
@@ -314,22 +362,57 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
                 slide, "tech-card-", 13, slide_number
             )
             errors.extend(tech_errors)
-            technologies = [row.cells[0] for row in source_slide.table_rows]
-            unmatched_technologies = []
-            for technology in technologies:
+            for row in source_slide.table_rows:
+                technology, status, value = row.cells[:3]
                 normalized_shape_name = f"tech-card-{_normalized_name(technology)}"
-                if not any(
-                    shape.name.casefold() == normalized_shape_name
-                    or technology.casefold() in shape.text.casefold()
+                matches = [
+                    shape
                     for shape in tech_cards
                     if _is_native_text_shape(shape)
+                    and shape.name.casefold() == normalized_shape_name
+                ]
+                if len(matches) != 1 or technology.casefold() not in (
+                    matches[0].text.casefold() if matches else ""
                 ):
-                    unmatched_technologies.append(technology)
-            if unmatched_technologies:
-                errors.append(
-                    "Slide 9 must contain every source technical name; "
-                    f"missing: {', '.join(unmatched_technologies)}"
-                )
+                    errors.append(
+                        "Slide 9 must contain every source technical name "
+                        f"exactly once; missing or duplicated: {technology}"
+                    )
+                    continue
+                if status.casefold() not in matches[0].text.casefold():
+                    errors.append(
+                        f"Slide 9 technical status must match the source for "
+                        f"{technology}"
+                    )
+                visible_or_notes = "\n".join([*texts, notes]).casefold()
+                if value.casefold() not in visible_or_notes:
+                    errors.append(
+                        f"Slide 9 technical value must be visible or in notes "
+                        f"for {technology}"
+                    )
+        if slide_number in STATUS_LABELS:
+            expected_statuses = STATUS_LABELS[slide_number]
+            status_shapes, status_errors = _validate_editable_named_shapes(
+                slide, "status-tag-", len(expected_statuses), slide_number
+            )
+            errors.extend(status_errors)
+            for index, (expected_label, _) in enumerate(
+                expected_statuses, start=1
+            ):
+                expected_name = f"status-tag-{slide_number}-{index}"
+                matches = [
+                    shape
+                    for shape in status_shapes
+                    if shape.name.casefold() == expected_name
+                ]
+                if (
+                    len(matches) != 1
+                    or matches[0].text.strip() != expected_label
+                ):
+                    errors.append(
+                        f"Slide {slide_number} {expected_name} must match "
+                        "the configured visible status label"
+                    )
         if slide_number == 14:
             roadmap_shapes = _named_shapes(slide, "roadmap-step-")
             expected_names = [
@@ -349,15 +432,14 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
                     errors.append(
                         f"Slide 14 {expected_name} must be a native text shape"
                     )
-                elif re.sub(
-                    r"^\d+\.\s*", "", matches[0].text.strip()
-                ) != re.sub(
-                    r"^\d+\.\s*",
-                    "",
-                    source_slide.bullets[int(expected_name.rsplit("-", 1)[1]) - 1],
+                elif matches[0].text.strip() != roadmap_label(
+                    source_slide.bullets[
+                        int(expected_name.rsplit("-", 1)[1]) - 1
+                    ]
                 ):
                     errors.append(
-                        f"Slide 14 {expected_name} must match the source roadmap"
+                        f"Slide 14 {expected_name} must match the compact "
+                        "source roadmap label"
                     )
             if len(roadmap_shapes) != 5:
                 errors.append(

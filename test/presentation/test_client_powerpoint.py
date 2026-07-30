@@ -14,7 +14,7 @@ import unittest
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 from scripts.presentation import build_client_powerpoint as deck_builder
 from scripts.presentation.build_client_powerpoint import (
@@ -33,6 +33,13 @@ SOURCE_PATH = (
 )
 
 
+def _roadmap_label(bullet: str) -> str:
+    match = re.match(r"^(?P<number>\d+)\.\s*(?P<title>[^：:]+)", bullet)
+    if not match:
+        raise AssertionError(f"Unexpected roadmap bullet: {bullet}")
+    return f"{match.group('number')} {match.group('title').strip()}"
+
+
 class MarkdownParserTests(unittest.TestCase):
     def test_default_output_path_is_the_client_delivery_path(self) -> None:
         self.assertEqual(
@@ -47,6 +54,16 @@ class MarkdownParserTests(unittest.TestCase):
         self.assertEqual(list(range(1, 15)), [slide.number for slide in slides])
         self.assertTrue(all(slide.title.strip() for slide in slides))
         self.assertTrue(all(slide.speaker_notes.strip() for slide in slides))
+
+    def test_readme_documents_powerpoint_runtime_and_rendering_limit(self) -> None:
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Python 3.14", readme)
+        self.assertIn("python-pptx 1.0.2", readme)
+        self.assertIn("PowerPoint/LibreOffice", readme)
+        self.assertIn("換行", readme)
+        self.assertIn("重疊", readme)
+        self.assertIn("字級", readme)
 
     def test_parses_the_thirteen_technical_table_rows_on_slide_nine(self) -> None:
         slides = parse_markdown(SOURCE_PATH)
@@ -172,6 +189,58 @@ class GeneratedPresentationLayoutTests(unittest.TestCase):
                 for card in cards
             )
         )
+        source_rows = parse_markdown(SOURCE_PATH)[8].table_rows
+        notes = technology_slide.notes_slide.notes_text_frame.text
+        cards_by_name = {card.name: card for card in cards}
+        for row in source_rows:
+            card = cards_by_name[
+                "tech-card-"
+                + re.sub(
+                    r"[^a-z0-9]+", "-", row.cells[0].casefold()
+                ).strip("-")
+            ]
+            self.assertIn(row.cells[0], card.text)
+            self.assertIn(row.cells[1], card.text)
+            self.assertIn(row.cells[2], notes)
+
+    def test_slide_nine_technology_group_names_are_unique_ascii_slugs(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+            technology_slide = deck.slides[8]
+
+        names = [
+            shape.name
+            for shape in technology_slide.shapes
+            if shape.name.startswith("technology-group-")
+        ]
+        self.assertEqual(3, len(names))
+        self.assertEqual(3, len(set(names)))
+        self.assertTrue(all(re.fullmatch(r"[a-z0-9-]+", name) for name in names))
+
+    def test_readability_shapes_use_declared_minimum_font_sizes(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+
+        minimums = {
+            "conclusion-": 16,
+            "bullet-": 16,
+            "cover-value-proposition-": 16,
+            "tech-card-": 12,
+            "roadmap-step-": 16,
+        }
+        for slide in deck.slides:
+            for shape in slide.shapes:
+                for prefix, minimum in minimums.items():
+                    if not shape.name.startswith(prefix):
+                        continue
+                    sizes = [
+                        run.font.size.pt
+                        for paragraph in shape.text_frame.paragraphs
+                        for run in paragraph.runs
+                        if run.text.strip() and run.font.size is not None
+                    ]
+                    self.assertTrue(sizes, shape.name)
+                    self.assertGreaterEqual(min(sizes), minimum, shape.name)
 
     def test_slides_eleven_to_thirteen_have_named_status_colors(self) -> None:
         with TemporaryDirectory() as directory:
@@ -207,18 +276,12 @@ class GeneratedPresentationLayoutTests(unittest.TestCase):
             [shape.name for shape in roadmap_steps],
         )
         self.assertEqual(
-            ["1", "2", "3", "4", "5"],
-            [shape.text.strip().split(".", 1)[0] for shape in roadmap_steps],
+            [
+                _roadmap_label(bullet)
+                for bullet in parse_markdown(SOURCE_PATH)[13].bullets
+            ],
+            [shape.text.strip() for shape in roadmap_steps],
         )
-        expected_details = [
-            re.sub(r"^\d+\.\s*", "", bullet)
-            for bullet in parse_markdown(SOURCE_PATH)[13].bullets
-        ]
-        actual_details = [
-            re.sub(r"^\d+\.\s*", "", shape.text.strip())
-            for shape in roadmap_steps
-        ]
-        self.assertEqual(expected_details, actual_details)
 
 
 class PresentationVerifierCommandTests(unittest.TestCase):
@@ -270,6 +333,7 @@ class PresentationVerifierTests(unittest.TestCase):
         *,
         color: str | None = None,
         font_name: str | None = None,
+        font_size: float = 16,
     ):
         shape = shapes.add_textbox(
             Inches(left), Inches(top), Inches(width), Inches(height)
@@ -280,6 +344,7 @@ class PresentationVerifierTests(unittest.TestCase):
             for run in paragraph.runs:
                 run.font.color.rgb = RGBColor.from_string(color or self.WHITE)
                 run.font.name = font_name or self.FONT_NAME
+                run.font.size = Pt(font_size)
         return shape
 
     def _write_presentation(
@@ -304,6 +369,9 @@ class PresentationVerifierTests(unittest.TestCase):
         flow_node_text_override: str | None = None,
         technology_count: int = 13,
         technology_name_override: str | None = None,
+        technology_status_override: str | None = None,
+        technology_value_override: str | None = None,
+        status_label_override: str | None = None,
         roadmap_names: list[str] | None = None,
         roadmap_text_override: str | None = None,
         replace_flow_node_with_picture: bool = False,
@@ -314,6 +382,9 @@ class PresentationVerifierTests(unittest.TestCase):
         include_grouped_sensitive_table: bool = False,
         include_out_of_bounds_shape: bool = False,
         include_unnamed_wrong_style: bool = False,
+        wrong_style_slide: int | None = None,
+        undersized_shape_name: str | None = None,
+        source_slide_limit: int | None = None,
     ) -> None:
         source_slides = parse_markdown(SOURCE_PATH)
         presentation = Presentation()
@@ -321,7 +392,7 @@ class PresentationVerifierTests(unittest.TestCase):
             presentation.slide_width = 13_333_333
             presentation.slide_height = 7_500_000
 
-        for source_slide in source_slides:
+        for source_slide in source_slides[:source_slide_limit]:
             slide = presentation.slides.add_slide(presentation.slide_layouts[6])
             background = slide.background.fill
             background.solid()
@@ -343,6 +414,11 @@ class PresentationVerifierTests(unittest.TestCase):
                 0.5,
                 color=primary_text_color,
                 font_name=primary_font_name,
+                font_size=(
+                    15
+                    if undersized_shape_name == f"title-{source_slide.number}"
+                    else 16
+                ),
             )
             if source_slide.number != missing_conclusion_slide:
                 self._add_text(
@@ -358,6 +434,12 @@ class PresentationVerifierTests(unittest.TestCase):
                     8,
                     color=primary_text_color,
                     font_name=primary_font_name,
+                    font_size=(
+                        15
+                        if undersized_shape_name
+                        == f"conclusion-{source_slide.number}"
+                        else 16
+                    ),
                 )
             bullets = list(source_slide.bullets)
             requested_count = (bullet_count_by_slide or {}).get(
@@ -381,13 +463,28 @@ class PresentationVerifierTests(unittest.TestCase):
                     4,
                     color=primary_text_color,
                     font_name=primary_font_name,
+                    font_size=(
+                        15
+                        if undersized_shape_name
+                        == f"bullet-{source_slide.number}-{bullet_index + 1}"
+                        else 16
+                    ),
                 )
             if include_notes or source_slide.number != 2:
-                slide.notes_slide.notes_text_frame.text = (
+                notes_text = (
                     notes_text_override
                     if source_slide.number == 2 and notes_text_override
                     else source_slide.speaker_notes
                 )
+                if source_slide.number == 9:
+                    detail_lines = []
+                    for row_index, row in enumerate(source_slide.table_rows):
+                        cells = list(row.cells)
+                        if row_index == 0 and technology_value_override:
+                            cells[2] = technology_value_override
+                        detail_lines.append("｜".join(cells))
+                    notes_text += "\n\n" + "\n".join(detail_lines)
+                slide.notes_slide.notes_text_frame.text = notes_text
             if source_slide.number != missing_accent_slide:
                 accent = slide.shapes.add_shape(
                     MSO_SHAPE.RECTANGLE,
@@ -456,16 +553,26 @@ class PresentationVerifierTests(unittest.TestCase):
                         )
                         shape.name = name
                     else:
+                        status = (
+                            technology_status_override
+                            if row_index == 0 and technology_status_override
+                            else row.cells[1]
+                        )
                         self._add_text(
                             slide.shapes,
                             name,
-                            f"Technology: {technology}",
+                            f"{technology}\n{status}",
                             0.5 + (row_index % 4) * 3,
                             3 + (row_index // 4) * 0.5,
                             2.7,
                             0.35,
                             color=primary_text_color,
                             font_name=primary_font_name,
+                            font_size=(
+                                11
+                                if undersized_shape_name == name
+                                else 12
+                            ),
                         )
             if source_slide.number == 14:
                 for step_index, name in enumerate(
@@ -488,12 +595,14 @@ class PresentationVerifierTests(unittest.TestCase):
                             (
                                 roadmap_text_override
                                 if step_index == 0 and roadmap_text_override
-                                else source_slide.bullets[
-                                    min(
-                                        step_index,
-                                        len(source_slide.bullets) - 1,
-                                    )
-                                ]
+                                else _roadmap_label(
+                                    source_slide.bullets[
+                                        min(
+                                            step_index,
+                                            len(source_slide.bullets) - 1,
+                                        )
+                                    ]
+                                )
                             ),
                             0.5,
                             3 + step_index * 0.5,
@@ -501,7 +610,31 @@ class PresentationVerifierTests(unittest.TestCase):
                             0.3,
                             color=primary_text_color,
                             font_name=primary_font_name,
+                            font_size=(
+                                15
+                                if undersized_shape_name == name
+                                else 16
+                            ),
                         )
+            if source_slide.number in deck_builder.STATUS_LABELS:
+                for label_index, (label, _) in enumerate(
+                    deck_builder.STATUS_LABELS[source_slide.number], start=1
+                ):
+                    self._add_text(
+                        slide.shapes,
+                        f"status-tag-{source_slide.number}-{label_index}",
+                        (
+                            status_label_override
+                            if source_slide.number == 11
+                            and label_index == 1
+                            and status_label_override
+                            else label
+                        ),
+                        8,
+                        3 + label_index * 0.4,
+                        3,
+                        0.3,
+                    )
 
         first_slide = presentation.slides[0]
         if include_sensitive_text:
@@ -543,6 +676,14 @@ class PresentationVerifierTests(unittest.TestCase):
                 color="000000",
                 font_name="Arial",
             )
+        if wrong_style_slide is not None:
+            for shape in presentation.slides[wrong_style_slide - 1].shapes:
+                if not getattr(shape, "has_text_frame", False):
+                    continue
+                for paragraph in shape.text_frame.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.color.rgb = RGBColor.from_string("000000")
+                        run.font.name = "Arial"
         presentation.save(destination)
 
     def _errors(self, **overrides) -> str:
@@ -555,6 +696,43 @@ class PresentationVerifierTests(unittest.TestCase):
 
     def test_accepts_a_complete_widescreen_presentation(self) -> None:
         self.assertEqual("", self._errors())
+
+    def test_rejects_thirteen_slide_source(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.md"
+            source_text = SOURCE_PATH.read_text(encoding="utf-8")
+            source_path.write_text(
+                source_text.rsplit("\n---\n", 1)[0],
+                encoding="utf-8",
+            )
+            pptx_path = Path(directory) / "deck.pptx"
+            self._write_presentation(pptx_path)
+
+            errors = "\n".join(
+                verify_presentation(pptx_path, source_path)
+            ).lower()
+
+        self.assertIn("source", errors)
+        self.assertIn("14", errors)
+
+    def test_rejects_out_of_sequence_source_numbers(self) -> None:
+        with TemporaryDirectory() as directory:
+            source_path = Path(directory) / "source.md"
+            source_path.write_text(
+                SOURCE_PATH.read_text(encoding="utf-8").replace(
+                    "## 第 14 頁", "## 第 13 頁", 1
+                ),
+                encoding="utf-8",
+            )
+            pptx_path = Path(directory) / "deck.pptx"
+            self._write_presentation(pptx_path)
+
+            errors = "\n".join(
+                verify_presentation(pptx_path, source_path)
+            ).lower()
+
+        self.assertIn("source", errors)
+        self.assertIn("1..14", errors)
 
     def test_rejects_non_widescreen_presentation(self) -> None:
         self.assertIn("16:9", self._errors(aspect_ratio="standard"))
@@ -592,6 +770,12 @@ class PresentationVerifierTests(unittest.TestCase):
 
     def test_rejects_unnamed_visible_black_arial_text(self) -> None:
         errors = self._errors(include_unnamed_wrong_style=True)
+        self.assertIn("white", errors)
+        self.assertIn("microsoft jhenghei", errors)
+
+    def test_rejects_one_slide_with_wrong_primary_text_theme(self) -> None:
+        errors = self._errors(wrong_style_slide=2)
+        self.assertIn("slide 2", errors)
         self.assertIn("white", errors)
         self.assertIn("microsoft jhenghei", errors)
 
@@ -639,6 +823,53 @@ class PresentationVerifierTests(unittest.TestCase):
     def test_rejects_technical_card_picture_replacement(self) -> None:
         self.assertIn(
             "native", self._errors(replace_tech_card_with_picture=True)
+        )
+
+    def test_rejects_technical_card_with_tampered_status(self) -> None:
+        self.assertIn(
+            "status",
+            self._errors(technology_status_override="Status tampered"),
+        )
+
+    def test_rejects_technical_row_with_tampered_value(self) -> None:
+        self.assertIn(
+            "value",
+            self._errors(technology_value_override="Value tampered"),
+        )
+
+    def test_rejects_undersized_conclusion_text(self) -> None:
+        self.assertIn(
+            "16pt",
+            self._errors(undersized_shape_name="conclusion-2"),
+        )
+
+    def test_rejects_undersized_bullet_text(self) -> None:
+        self.assertIn(
+            "16pt",
+            self._errors(undersized_shape_name="bullet-2-1"),
+        )
+
+    def test_rejects_undersized_technical_card_text(self) -> None:
+        source_technology = parse_markdown(SOURCE_PATH)[8].table_rows[0].cells[0]
+        self.assertIn(
+            "12pt",
+            self._errors(
+                undersized_shape_name=(
+                    f"tech-card-{self._normalized_name(source_technology)}"
+                )
+            ),
+        )
+
+    def test_rejects_undersized_roadmap_step_text(self) -> None:
+        self.assertIn(
+            "16pt",
+            self._errors(undersized_shape_name="roadmap-step-1"),
+        )
+
+    def test_rejects_tampered_visible_status_label(self) -> None:
+        self.assertIn(
+            "status-tag",
+            self._errors(status_label_override="Tampered status"),
         )
 
     def test_rejects_missing_named_roadmap_step(self) -> None:

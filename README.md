@@ -28,6 +28,11 @@ deploying.
 
 ## Client PowerPoint
 
+Prerequisites:
+
+- Python 3.14.
+- python-pptx 1.0.2.
+
 Regenerate the editable client project-update deck, then validate its source
 coverage, slide geometry, notes, and native editable shapes:
 
@@ -38,6 +43,10 @@ python scripts/presentation/verify_client_powerpoint.py
 
 The delivery file is
 `docs/presentations/AI-ChotBot-project-progress-client.pptx`.
+
+This environment has no PowerPoint/LibreOffice renderer. Structural
+verification is not equivalent to a real render. Before client delivery, open
+the deck in PowerPoint/LibreOffice and inspect every slide for 換行、重疊與字級.
 
 ## Provision Cloudflare
 

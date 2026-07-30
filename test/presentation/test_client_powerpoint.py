@@ -6,14 +6,17 @@ import base64
 from io import BytesIO
 from pathlib import Path
 import re
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.util import Inches
 
+from scripts.presentation import build_client_powerpoint as deck_builder
 from scripts.presentation.build_client_powerpoint import (
     DEFAULT_OUTPUT_PATH,
     parse_markdown,
@@ -57,6 +60,144 @@ class MarkdownParserTests(unittest.TestCase):
         self.assertGreaterEqual(len(slides[4].bullets), 4)
         self.assertEqual(1, len(slides[4].mermaid_blocks))
         self.assertIn("flowchart", slides[4].mermaid_blocks[0])
+
+
+class GeneratedPresentationLayoutTests(unittest.TestCase):
+    STATUS_COLORS = {"21D4B4", "4BA3FF", "FFBE55", "FF6B6B"}
+
+    def _build_deck(self, destination: Path) -> Presentation:
+        build_presentation = getattr(deck_builder, "build_presentation", None)
+        self.assertIsNotNone(
+            build_presentation,
+            "build_presentation must generate the editable client deck",
+        )
+        build_presentation(SOURCE_PATH, destination)
+        return Presentation(destination)
+
+    @staticmethod
+    def _shape_fill_rgb(shape) -> str | None:
+        try:
+            return str(shape.fill.fore_color.rgb).upper()
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def test_uses_exact_widescreen_dimensions(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+
+        self.assertAlmostEqual(13.333, deck.slide_width.inches, places=3)
+        self.assertEqual(7.5, deck.slide_height.inches)
+
+    def test_cover_names_the_value_proposition(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+            cover = deck.slides[0]
+
+        value_shapes = [
+            shape
+            for shape in cover.shapes
+            if shape.name.startswith("cover-value-proposition-")
+        ]
+        self.assertEqual(1, len(value_shapes))
+        self.assertEqual(
+            parse_markdown(SOURCE_PATH)[0].bullets[1],
+            value_shapes[0].text.strip(),
+        )
+
+    def test_slide_five_uses_native_flow_connectors(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+            flow_slide = deck.slides[4]
+
+        connectors = [
+            shape
+            for shape in flow_slide.shapes
+            if shape.name.startswith("flow-connector-")
+        ]
+        self.assertGreaterEqual(5, len(connectors))
+        self.assertTrue(
+            all(shape.shape_type == MSO_SHAPE_TYPE.LINE for shape in connectors)
+        )
+
+    def test_slide_nine_contains_thirteen_native_technology_cards(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+            technology_slide = deck.slides[8]
+
+        cards = [
+            shape
+            for shape in technology_slide.shapes
+            if shape.name.startswith("tech-card-")
+        ]
+        self.assertEqual(13, len(cards))
+        self.assertTrue(
+            all(
+                card.shape_type != MSO_SHAPE_TYPE.PICTURE
+                and card.has_text_frame
+                for card in cards
+            )
+        )
+
+    def test_slides_eleven_to_thirteen_have_named_status_colors(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+
+        for slide_number in range(11, 14):
+            status_shapes = [
+                shape
+                for shape in deck.slides[slide_number - 1].shapes
+                if shape.name.startswith("status-tag-")
+            ]
+            self.assertTrue(status_shapes, f"slide {slide_number}")
+            self.assertTrue(
+                any(
+                    self._shape_fill_rgb(shape) in self.STATUS_COLORS
+                    for shape in status_shapes
+                ),
+                f"slide {slide_number}",
+            )
+
+    def test_slide_fourteen_has_five_numbered_roadmap_steps(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+            roadmap_slide = deck.slides[13]
+
+        roadmap_steps = [
+            shape
+            for shape in roadmap_slide.shapes
+            if shape.name.startswith("roadmap-step-")
+        ]
+        self.assertEqual(
+            [f"roadmap-step-{number}" for number in range(1, 6)],
+            [shape.name for shape in roadmap_steps],
+        )
+        self.assertEqual(
+            ["1", "2", "3", "4", "5"],
+            [shape.text.strip().split(".", 1)[0] for shape in roadmap_steps],
+        )
+
+
+class PresentationVerifierCommandTests(unittest.TestCase):
+    def test_verifier_runs_from_the_documented_direct_script_command(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "scripts/presentation/verify_client_powerpoint.py",
+            ],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(
+            0,
+            completed.returncode,
+            completed.stderr.decode(errors="replace"),
+        )
+        self.assertIn(
+            b"PowerPoint verification passed: 14 slides",
+            completed.stdout,
+        )
 
 
 class PresentationVerifierTests(unittest.TestCase):

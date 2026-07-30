@@ -9,7 +9,10 @@ from pptx import Presentation
 from pptx.enum.dml import MSO_COLOR_TYPE, MSO_FILL_TYPE
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
-from .build_client_powerpoint import parse_markdown
+try:
+    from .build_client_powerpoint import parse_markdown
+except ImportError:  # Direct execution: python scripts/presentation/verify_*.py
+    from build_client_powerpoint import parse_markdown
 
 
 SENSITIVE_IDENTIFIER = re.compile(
@@ -338,3 +341,22 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
                 )
 
     return errors
+
+
+def main() -> None:
+    pptx_path = Path(
+        "docs/presentations/AI-ChotBot-project-progress-client.pptx"
+    )
+    source_path = Path(
+        "docs/presentations/2026-07-30-project-progress-client-presentation.md"
+    )
+    errors = verify_presentation(pptx_path, source_path)
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}")
+        raise SystemExit(1)
+    print("PowerPoint verification passed: 14 slides")
+
+
+if __name__ == "__main__":
+    main()

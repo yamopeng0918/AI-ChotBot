@@ -12,6 +12,7 @@ from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.util import Inches
 
 from scripts.presentation.build_client_powerpoint import parse_markdown
+from scripts.presentation.build_technical_powerpoint import build_technical_presentation
 from scripts.presentation.verify_technical_powerpoint import verify_technical_presentation
 
 
@@ -205,6 +206,18 @@ class TechnicalVerifierContractTests(unittest.TestCase):
 
     def test_rejects_message_flow_connector_copy_suffix(self) -> None:
         self.assertIn("message-flow-connector-1", self._errors(duplicate_message_connector=True))
+
+
+class GeneratedTechnicalPowerPointTests(unittest.TestCase):
+    def test_generated_deck_satisfies_the_complete_technical_contract(self) -> None:
+        with TemporaryDirectory() as directory:
+            output_path = Path(directory) / "technical.pptx"
+
+            build_technical_presentation(SOURCE_PATH, output_path)
+
+            self.assertEqual(
+                [], verify_technical_presentation(output_path, SOURCE_PATH)
+            )
 
 
 if __name__ == "__main__":

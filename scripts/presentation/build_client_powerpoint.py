@@ -34,9 +34,7 @@ BLUE = "4BA3FF"
 AMBER = "FFBE55"
 CORAL = "FF6B6B"
 
-# Task 1's strict verifier requires literal FFFFFF for primary text while the
-# visual palette keeps the slightly softer WHITE for fills and decoration.
-PRIMARY_TEXT = "FFFFFF"
+PRIMARY_TEXT = WHITE
 FONT_NAME = "Microsoft JhengHei"
 SLIDE_WIDTH = Inches(40 / 3)
 SLIDE_HEIGHT = Inches(7.5)
@@ -536,14 +534,11 @@ def _build_flow_slide(
 ) -> None:
     slide = _new_slide(presentation, content)
     _add_heading(slide, content)
-    node_texts = (
-        "LINE 提問",
-        "安全與條件檢查",
-        "排入處理隊伍",
-        "查找資料",
-        "AI 整理",
-        "回傳與紀錄",
+    node_texts = re.findall(
+        r"\b[A-F]\[([^\]]+)\]", content.mermaid_blocks[0]
     )
+    if len(node_texts) != 6:
+        raise ValueError("Slide 5 Mermaid source must contain nodes A–F")
     node_lefts = [0.53 + index * 2.08 for index in range(6)]
     for index in range(5):
         _add_connector_arrow(
@@ -740,13 +735,6 @@ def _build_roadmap_slide(
 ) -> None:
     slide = _new_slide(presentation, content)
     _add_heading(slide, content)
-    roadmap_titles = (
-        "完成分支",
-        "自動化驗證",
-        "合併",
-        "正式部署",
-        "實機驗收",
-    )
     lefts = [0.57 + index * 2.52 for index in range(5)]
     for index in range(4):
         _add_connector_arrow(
@@ -757,18 +745,18 @@ def _build_roadmap_slide(
             2.68,
             color=TEAL if index < 2 else BLUE,
         )
-    for index, (left, title) in enumerate(
-        zip(lefts, roadmap_titles), start=1
+    for index, (left, bullet) in enumerate(
+        zip(lefts, content.bullets), start=1
     ):
         _add_card(
             slide,
             f"roadmap-step-{index}",
-            f"{index}. {title}",
+            bullet,
             left,
             2.22,
             2.14,
             0.92,
-            size=13,
+            size=10.5,
             fill=PANEL,
             line=TEAL if index <= 3 else BLUE,
             bold=True,

@@ -20,7 +20,7 @@ SENSITIVE_IDENTIFIER = re.compile(
     re.IGNORECASE,
 )
 EXPECTED_BACKGROUND = "081A2E"
-EXPECTED_PRIMARY_TEXT = "FFFFFF"
+EXPECTED_PRIMARY_TEXT = "F4F8FC"
 EXPECTED_ACCENT = "21D4B4"
 EXPECTED_FONT = "Microsoft JhengHei"
 DECORATIVE_TEXT_PREFIXES = (
@@ -213,7 +213,9 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
         presentation
     )
     if not total_text or white_text / total_text < 0.75:
-        errors.append("At least 75% of primary text must be white (FFFFFF)")
+        errors.append(
+            "At least 75% of primary text must be white (F4F8FC)"
+        )
     if not total_text or expected_font_text / total_text < 0.75:
         errors.append(
             f"At least 75% of primary text must use {EXPECTED_FONT}"
@@ -295,6 +297,18 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
                 errors.append(
                     "Slide 5 flow-node- items must be native text shapes"
                 )
+            expected_flow_labels = re.findall(
+                r"\b[A-F]\[([^\]]+)\]",
+                source_slide.mermaid_blocks[0],
+            )
+            if [
+                shape.text.strip()
+                for shape in flow_nodes
+                if _is_native_text_shape(shape)
+            ] != expected_flow_labels:
+                errors.append(
+                    "Slide 5 flow-node text must match every source flow node"
+                )
         if slide_number == 9:
             tech_cards, tech_errors = _validate_editable_named_shapes(
                 slide, "tech-card-", 13, slide_number
@@ -334,6 +348,16 @@ def verify_presentation(pptx_path: Path, source_path: Path) -> list[str]:
                 elif not _is_native_text_shape(matches[0]):
                     errors.append(
                         f"Slide 14 {expected_name} must be a native text shape"
+                    )
+                elif re.sub(
+                    r"^\d+\.\s*", "", matches[0].text.strip()
+                ) != re.sub(
+                    r"^\d+\.\s*",
+                    "",
+                    source_slide.bullets[int(expected_name.rsplit("-", 1)[1]) - 1],
+                ):
+                    errors.append(
+                        f"Slide 14 {expected_name} must match the source roadmap"
                     )
             if len(roadmap_shapes) != 5:
                 errors.append(

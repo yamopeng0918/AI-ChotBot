@@ -88,6 +88,27 @@ class GeneratedPresentationLayoutTests(unittest.TestCase):
         self.assertAlmostEqual(13.333, deck.slide_width.inches, places=3)
         self.assertEqual(7.5, deck.slide_height.inches)
 
+    def test_generated_deck_satisfies_complete_verifier_contract(self) -> None:
+        with TemporaryDirectory() as directory:
+            pptx_path = Path(directory) / "deck.pptx"
+            deck_builder.build_presentation(SOURCE_PATH, pptx_path)
+
+            self.assertEqual([], verify_presentation(pptx_path, SOURCE_PATH))
+
+    def test_primary_text_uses_exact_theme_white(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+
+        title = next(
+            shape
+            for shape in deck.slides[1].shapes
+            if shape.name == "title-2"
+        )
+        self.assertEqual(
+            "F4F8FC",
+            str(title.text_frame.paragraphs[0].runs[0].font.color.rgb),
+        )
+
     def test_cover_names_the_value_proposition(self) -> None:
         with TemporaryDirectory() as directory:
             deck = self._build_deck(Path(directory) / "deck.pptx")
@@ -118,6 +139,20 @@ class GeneratedPresentationLayoutTests(unittest.TestCase):
         self.assertTrue(
             all(shape.shape_type == MSO_SHAPE_TYPE.LINE for shape in connectors)
         )
+
+    def test_slide_five_flow_nodes_match_mermaid_source_labels(self) -> None:
+        with TemporaryDirectory() as directory:
+            deck = self._build_deck(Path(directory) / "deck.pptx")
+            flow_slide = deck.slides[4]
+
+        mermaid = parse_markdown(SOURCE_PATH)[4].mermaid_blocks[0]
+        expected_labels = re.findall(r"\b[A-F]\[([^\]]+)\]", mermaid)
+        actual_labels = [
+            shape.text.strip()
+            for shape in flow_slide.shapes
+            if shape.name.startswith("flow-node-")
+        ]
+        self.assertEqual(expected_labels, actual_labels)
 
     def test_slide_nine_contains_thirteen_native_technology_cards(self) -> None:
         with TemporaryDirectory() as directory:
@@ -175,6 +210,15 @@ class GeneratedPresentationLayoutTests(unittest.TestCase):
             ["1", "2", "3", "4", "5"],
             [shape.text.strip().split(".", 1)[0] for shape in roadmap_steps],
         )
+        expected_details = [
+            re.sub(r"^\d+\.\s*", "", bullet)
+            for bullet in parse_markdown(SOURCE_PATH)[13].bullets
+        ]
+        actual_details = [
+            re.sub(r"^\d+\.\s*", "", shape.text.strip())
+            for shape in roadmap_steps
+        ]
+        self.assertEqual(expected_details, actual_details)
 
 
 class PresentationVerifierCommandTests(unittest.TestCase):
@@ -202,7 +246,7 @@ class PresentationVerifierCommandTests(unittest.TestCase):
 
 class PresentationVerifierTests(unittest.TestCase):
     DARK_BLUE = "081A2E"
-    WHITE = "FFFFFF"
+    WHITE = "F4F8FC"
     TEAL = "21D4B4"
     FONT_NAME = "Microsoft JhengHei"
     ONE_PIXEL_PNG = base64.b64decode(
@@ -257,9 +301,11 @@ class PresentationVerifierTests(unittest.TestCase):
         missing_conclusion_slide: int | None = None,
         bullet_count_by_slide: dict[int, int] | None = None,
         flow_node_count: int = 6,
+        flow_node_text_override: str | None = None,
         technology_count: int = 13,
         technology_name_override: str | None = None,
         roadmap_names: list[str] | None = None,
+        roadmap_text_override: str | None = None,
         replace_flow_node_with_picture: bool = False,
         replace_tech_card_with_picture: bool = False,
         replace_roadmap_step_with_picture: bool = False,
@@ -375,7 +421,14 @@ class PresentationVerifierTests(unittest.TestCase):
                         self._add_text(
                             slide.shapes,
                             name,
-                            f"Node {node + 1}",
+                            (
+                                flow_node_text_override
+                                if node == 0 and flow_node_text_override
+                                else re.findall(
+                                    r"\b[A-F]\[([^\]]+)\]",
+                                    source_slide.mermaid_blocks[0],
+                                )[node]
+                            ),
                             0.5 + node,
                             3,
                             0.8,
@@ -432,7 +485,16 @@ class PresentationVerifierTests(unittest.TestCase):
                         self._add_text(
                             slide.shapes,
                             name,
-                            f"{step_index + 1}. Step",
+                            (
+                                roadmap_text_override
+                                if step_index == 0 and roadmap_text_override
+                                else source_slide.bullets[
+                                    min(
+                                        step_index,
+                                        len(source_slide.bullets) - 1,
+                                    )
+                                ]
+                            ),
                             0.5,
                             3 + step_index * 0.5,
                             5,
@@ -559,6 +621,12 @@ class PresentationVerifierTests(unittest.TestCase):
             "native", self._errors(replace_flow_node_with_picture=True)
         )
 
+    def test_rejects_english_flow_node_substitution(self) -> None:
+        self.assertIn(
+            "source flow node",
+            self._errors(flow_node_text_override="English Node"),
+        )
+
     def test_rejects_missing_technical_card(self) -> None:
         self.assertIn("exactly 13", self._errors(technology_count=12))
 
@@ -585,6 +653,12 @@ class PresentationVerifierTests(unittest.TestCase):
     def test_rejects_roadmap_step_picture_replacement(self) -> None:
         self.assertIn(
             "native", self._errors(replace_roadmap_step_with_picture=True)
+        )
+
+    def test_rejects_english_roadmap_step_substitution(self) -> None:
+        self.assertIn(
+            "source roadmap",
+            self._errors(roadmap_text_override="1. English Step"),
         )
 
     def test_rejects_sensitive_text_inside_nested_group(self) -> None:

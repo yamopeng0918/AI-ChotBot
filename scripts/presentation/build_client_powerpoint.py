@@ -7,6 +7,9 @@ from pathlib import Path
 import re
 
 
+DEFAULT_OUTPUT_PATH = Path(
+    "docs/presentations/AI-ChotBot-project-progress-client.pptx"
+)
 SLIDE_HEADING = re.compile(
     r"^##\s+第\s*(?P<number>\d+)\s*頁\s*[｜|]\s*(?P<title>.+?)\s*$"
 )

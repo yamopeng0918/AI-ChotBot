@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 import unittest
 
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
 from pptx.util import Inches
 
-from scripts.presentation.build_client_powerpoint import parse_markdown
+from scripts.presentation.build_client_powerpoint import (
+    DEFAULT_OUTPUT_PATH,
+    parse_markdown,
+)
 from scripts.presentation.verify_client_powerpoint import verify_presentation
 
 
@@ -23,6 +31,12 @@ SOURCE_PATH = (
 
 
 class MarkdownParserTests(unittest.TestCase):
+    def test_default_output_path_is_the_client_delivery_path(self) -> None:
+        self.assertEqual(
+            Path("docs/presentations/AI-ChotBot-project-progress-client.pptx"),
+            DEFAULT_OUTPUT_PATH,
+        )
+
     def test_parses_all_fourteen_numbered_slides_with_titles_and_notes(self) -> None:
         slides = parse_markdown(SOURCE_PATH)
 
@@ -46,17 +60,66 @@ class MarkdownParserTests(unittest.TestCase):
 
 
 class PresentationVerifierTests(unittest.TestCase):
+    DARK_BLUE = "081A2E"
+    WHITE = "FFFFFF"
+    TEAL = "21D4B4"
+    FONT_NAME = "Microsoft JhengHei"
+    ONE_PIXEL_PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+        "/x8AAusB9Wl2nWQAAAAASUVORK5CYII="
+    )
+
+    @staticmethod
+    def _normalized_name(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+    def _add_text(
+        self,
+        shapes,
+        name: str,
+        text: str,
+        left: float,
+        top: float,
+        width: float = 2.0,
+        height: float = 0.3,
+        *,
+        color: str | None = None,
+        font_name: str | None = None,
+    ):
+        shape = shapes.add_textbox(
+            Inches(left), Inches(top), Inches(width), Inches(height)
+        )
+        shape.name = name
+        shape.text_frame.text = text
+        for paragraph in shape.text_frame.paragraphs:
+            for run in paragraph.runs:
+                run.font.color.rgb = RGBColor.from_string(color or self.WHITE)
+                run.font.name = font_name or self.FONT_NAME
+        return shape
+
     def _write_presentation(
         self,
         destination: Path,
         *,
         aspect_ratio: str = "wide",
+        background_color: str | None = None,
+        primary_text_color: str | None = None,
+        primary_font_name: str | None = None,
+        accent_color: str | None = None,
         title_override: str | None = None,
         include_notes: bool = True,
+        missing_conclusion_slide: int | None = None,
+        bullet_count_by_slide: dict[int, int] | None = None,
         flow_node_count: int = 6,
         technology_count: int = 13,
-        step_count: int = 5,
+        technology_name_override: str | None = None,
+        roadmap_names: list[str] | None = None,
+        replace_flow_node_with_picture: bool = False,
+        replace_tech_card_with_picture: bool = False,
+        replace_roadmap_step_with_picture: bool = False,
         include_sensitive_text: bool = False,
+        include_grouped_sensitive_text: bool = False,
+        include_grouped_sensitive_table: bool = False,
         include_out_of_bounds_shape: bool = False,
     ) -> None:
         source_slides = parse_markdown(SOURCE_PATH)
@@ -67,73 +130,270 @@ class PresentationVerifierTests(unittest.TestCase):
 
         for source_slide in source_slides:
             slide = presentation.slides.add_slide(presentation.slide_layouts[6])
-            title = title_override if source_slide.number == 1 and title_override else source_slide.title
-            slide.shapes.add_textbox(Inches(0.4), Inches(0.2), Inches(12), Inches(0.5)).text_frame.text = title
+            background = slide.background.fill
+            background.solid()
+            background.fore_color.rgb = RGBColor.from_string(
+                background_color or self.DARK_BLUE
+            )
+            title = (
+                title_override
+                if source_slide.number == 1 and title_override
+                else source_slide.title
+            )
+            self._add_text(
+                slide.shapes,
+                f"title-{source_slide.number}",
+                title,
+                0.4,
+                0.2,
+                12,
+                0.5,
+                color=primary_text_color,
+                font_name=primary_font_name,
+            )
+            if source_slide.number != missing_conclusion_slide:
+                self._add_text(
+                    slide.shapes,
+                    f"conclusion-{source_slide.number}",
+                    f"Conclusion {source_slide.number}",
+                    0.5,
+                    0.8,
+                    8,
+                    color=primary_text_color,
+                    font_name=primary_font_name,
+                )
+            bullet_count = (bullet_count_by_slide or {}).get(source_slide.number, 3)
+            for bullet_index in range(bullet_count):
+                self._add_text(
+                    slide.shapes,
+                    f"bullet-{source_slide.number}-{bullet_index + 1}",
+                    f"Key point {bullet_index + 1}",
+                    0.5,
+                    1.2 + bullet_index * 0.35,
+                    4,
+                    color=primary_text_color,
+                    font_name=primary_font_name,
+                )
             if include_notes or source_slide.number != 2:
                 slide.notes_slide.notes_text_frame.text = "Speaker guidance"
             if source_slide.number == 5:
                 for node in range(flow_node_count):
-                    slide.shapes.add_textbox(
-                        Inches(0.5 + node), Inches(1.5), Inches(0.8), Inches(0.4)
-                    ).text_frame.text = f"Node {node + 1}"
+                    name = f"flow-node-{node + 1}"
+                    if replace_flow_node_with_picture and node == 0:
+                        shape = slide.shapes.add_picture(
+                            BytesIO(self.ONE_PIXEL_PNG),
+                            Inches(0.5 + node),
+                            Inches(3),
+                            Inches(0.8),
+                            Inches(0.4),
+                        )
+                        shape.name = name
+                    else:
+                        self._add_text(
+                            slide.shapes,
+                            name,
+                            f"Node {node + 1}",
+                            0.5 + node,
+                            3,
+                            0.8,
+                            0.4,
+                            color=primary_text_color,
+                            font_name=primary_font_name,
+                        )
             if source_slide.number == 9:
-                table = slide.shapes.add_table(
-                    technology_count, 1, Inches(0.5), Inches(1), Inches(5), Inches(4)
-                ).table
-                for row_index, row in enumerate(source_slide.table_rows[:technology_count]):
-                    table.cell(row_index, 0).text = row.cells[0]
+                for row_index, row in enumerate(
+                    source_slide.table_rows[:technology_count]
+                ):
+                    technology = (
+                        technology_name_override
+                        if row_index == 0 and technology_name_override
+                        else row.cells[0]
+                    )
+                    name = f"tech-card-{self._normalized_name(technology)}"
+                    if replace_tech_card_with_picture and row_index == 0:
+                        shape = slide.shapes.add_picture(
+                            BytesIO(self.ONE_PIXEL_PNG),
+                            Inches(0.5 + row_index * 0.3),
+                            Inches(3),
+                            Inches(0.25),
+                            Inches(0.25),
+                        )
+                        shape.name = name
+                    else:
+                        self._add_text(
+                            slide.shapes,
+                            name,
+                            f"Technology: {technology}",
+                            0.5 + (row_index % 4) * 3,
+                            3 + (row_index // 4) * 0.5,
+                            2.7,
+                            0.35,
+                            color=primary_text_color,
+                            font_name=primary_font_name,
+                        )
             if source_slide.number == 14:
-                for step in range(step_count):
-                    slide.shapes.add_textbox(
-                        Inches(0.5), Inches(1 + step * 0.5), Inches(5), Inches(0.3)
-                    ).text_frame.text = f"{step + 1}. Step"
+                for step_index, name in enumerate(
+                    roadmap_names
+                    or [f"roadmap-step-{number}" for number in range(1, 6)]
+                ):
+                    if replace_roadmap_step_with_picture and step_index == 0:
+                        shape = slide.shapes.add_picture(
+                            BytesIO(self.ONE_PIXEL_PNG),
+                            Inches(0.5),
+                            Inches(3 + step_index * 0.5),
+                            Inches(1),
+                            Inches(0.3),
+                        )
+                        shape.name = name
+                    else:
+                        self._add_text(
+                            slide.shapes,
+                            name,
+                            f"{step_index + 1}. Step",
+                            0.5,
+                            3 + step_index * 0.5,
+                            5,
+                            0.3,
+                            color=primary_text_color,
+                            font_name=primary_font_name,
+                        )
 
         first_slide = presentation.slides[0]
+        accent = first_slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(12), Inches(0.2), Inches(0.2), Inches(0.2)
+        )
+        accent.name = "accent-1"
+        accent.fill.solid()
+        accent.fill.fore_color.rgb = RGBColor.from_string(accent_color or self.TEAL)
         if include_sensitive_text:
-            first_slide.shapes.add_textbox(
-                Inches(0.5), Inches(2), Inches(2), Inches(0.3)
-            ).text_frame.text = "access_token"
+            self._add_text(
+                first_slide.shapes, "extra-sensitive", "access_token", 0.5, 5
+            )
+        if include_grouped_sensitive_text:
+            outer_group = first_slide.shapes.add_group_shape()
+            inner_group = outer_group.shapes.add_group_shape()
+            self._add_text(
+                inner_group.shapes,
+                "nested-sensitive",
+                "channel_secret",
+                0.5,
+                5,
+            )
+        if include_grouped_sensitive_table:
+            group = first_slide.shapes.add_group_shape()
+            table_shape = first_slide.shapes.add_table(
+                1, 1, Inches(0.5), Inches(5), Inches(2), Inches(0.4)
+            )
+            table_shape.table.cell(0, 0).text = "database_id"
+            group.shapes._spTree.insert_element_before(
+                table_shape._element, "p:extLst"
+            )
         if include_out_of_bounds_shape:
-            first_slide.shapes.add_textbox(
-                Inches(13), Inches(1), Inches(1), Inches(0.3)
-            ).text_frame.text = "Overflow"
+            self._add_text(
+                first_slide.shapes, "overflow", "Overflow", 14, 1, 1, 0.3
+            )
         presentation.save(destination)
 
+    def _errors(self, **overrides) -> str:
+        with TemporaryDirectory() as directory:
+            pptx_path = Path(directory) / "deck.pptx"
+            self._write_presentation(pptx_path, **overrides)
+            return "\n".join(
+                verify_presentation(pptx_path, SOURCE_PATH)
+            ).lower()
+
     def test_accepts_a_complete_widescreen_presentation(self) -> None:
-        with TemporaryDirectory() as directory:
-            pptx_path = Path(directory) / "valid.pptx"
-            self._write_presentation(pptx_path)
+        self.assertEqual("", self._errors())
 
-            self.assertEqual([], verify_presentation(pptx_path, SOURCE_PATH))
+    def test_rejects_non_widescreen_presentation(self) -> None:
+        self.assertIn("16:9", self._errors(aspect_ratio="standard"))
 
-    def test_reports_all_required_contract_violations(self) -> None:
-        with TemporaryDirectory() as directory:
-            pptx_path = Path(directory) / "invalid.pptx"
-            self._write_presentation(
-                pptx_path,
-                aspect_ratio="standard",
-                title_override="Unexpected title",
-                include_notes=False,
-                flow_node_count=5,
-                technology_count=12,
-                step_count=4,
-                include_sensitive_text=True,
-                include_out_of_bounds_shape=True,
-            )
+    def test_rejects_slide_without_named_conclusion(self) -> None:
+        self.assertIn("conclusion", self._errors(missing_conclusion_slide=3))
 
-            errors = "\n".join(verify_presentation(pptx_path, SOURCE_PATH)).lower()
+    def test_rejects_slide_with_fewer_than_three_named_bullets(self) -> None:
+        self.assertIn("3–5", self._errors(bullet_count_by_slide={4: 2}))
 
-        for expected in (
-            "16:9",
-            "title",
-            "speaker notes",
-            "slide 5",
-            "slide 9",
-            "slide 14",
-            "outside",
+    def test_rejects_slide_with_more_than_five_named_bullets(self) -> None:
+        self.assertIn("3–5", self._errors(bullet_count_by_slide={4: 6}))
+
+    def test_rejects_wrong_deep_blue_background(self) -> None:
+        self.assertIn("081a2e", self._errors(background_color="FFFFFF"))
+
+    def test_rejects_obviously_nonwhite_primary_text(self) -> None:
+        self.assertIn("white", self._errors(primary_text_color="000000"))
+
+    def test_rejects_deck_without_teal_accent(self) -> None:
+        self.assertIn("21d4b4", self._errors(accent_color="FF0000"))
+
+    def test_rejects_wrong_primary_font(self) -> None:
+        self.assertIn(
+            "microsoft jhenghei", self._errors(primary_font_name="Arial")
+        )
+
+    def test_rejects_missing_flow_node_shape(self) -> None:
+        self.assertIn("flow-node", self._errors(flow_node_count=5))
+
+    def test_rejects_flow_node_picture_replacement(self) -> None:
+        self.assertIn(
+            "native", self._errors(replace_flow_node_with_picture=True)
+        )
+
+    def test_rejects_missing_technical_card(self) -> None:
+        self.assertIn("exactly 13", self._errors(technology_count=12))
+
+    def test_rejects_technical_card_that_does_not_match_source(self) -> None:
+        self.assertIn(
+            "technical name",
+            self._errors(technology_name_override="Unknown Technology"),
+        )
+
+    def test_rejects_technical_card_picture_replacement(self) -> None:
+        self.assertIn(
+            "native", self._errors(replace_tech_card_with_picture=True)
+        )
+
+    def test_rejects_missing_named_roadmap_step(self) -> None:
+        names = [f"roadmap-step-{number}" for number in range(1, 5)]
+        self.assertIn("roadmap-step-5", self._errors(roadmap_names=names))
+
+    def test_rejects_duplicate_named_roadmap_step(self) -> None:
+        names = [f"roadmap-step-{number}" for number in range(1, 6)]
+        names.append("roadmap-step-5")
+        self.assertIn("exactly once", self._errors(roadmap_names=names))
+
+    def test_rejects_roadmap_step_picture_replacement(self) -> None:
+        self.assertIn(
+            "native", self._errors(replace_roadmap_step_with_picture=True)
+        )
+
+    def test_rejects_sensitive_text_inside_nested_group(self) -> None:
+        self.assertIn(
             "sensitive",
-        ):
-            self.assertIn(expected, errors)
+            self._errors(include_grouped_sensitive_text=True),
+        )
+
+    def test_rejects_sensitive_table_cell_inside_group(self) -> None:
+        self.assertIn(
+            "sensitive",
+            self._errors(include_grouped_sensitive_table=True),
+        )
+
+    def test_rejects_title_mismatch(self) -> None:
+        self.assertIn("title", self._errors(title_override="Unexpected title"))
+
+    def test_rejects_empty_speaker_notes(self) -> None:
+        self.assertIn("speaker notes", self._errors(include_notes=False))
+
+    def test_rejects_out_of_bounds_shape(self) -> None:
+        self.assertIn(
+            "outside", self._errors(include_out_of_bounds_shape=True)
+        )
+
+    def test_rejects_top_level_sensitive_identifier(self) -> None:
+        self.assertIn(
+            "sensitive", self._errors(include_sensitive_text=True)
+        )
 
 
 if __name__ == "__main__":

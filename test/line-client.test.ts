@@ -26,6 +26,29 @@ describe("LineClient", () => {
     );
   });
 
+  it("posts one authenticated text push to the LINE push endpoint", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const client = new LineClient(fetcher, "line-secret");
+
+    await client.push("group-id", "hello");
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.line.me/v2/bot/message/push",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          Authorization: "Bearer line-secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          to: "group-id",
+          messages: [{ type: "text", text: "hello" }],
+        }),
+      }),
+    );
+  });
+
   it("rejects blank reply text without making a request", async () => {
     const fetcher = vi.fn();
     const client = new LineClient(fetcher, "line-secret");

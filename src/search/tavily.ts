@@ -17,7 +17,7 @@ export class TavilySearchService implements WebSearchService {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8_000);
     try {
-      const response = await this.fetcher("https://api.tavily.com/search", { method: "POST",
+      const response = await this.fetcher.call(globalThis, "https://api.tavily.com/search", { method: "POST",
         headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ query: bounded, search_depth: "basic", max_results: 5 }), signal: controller.signal });
       if (!response.ok) throw await httpError(response, controller.signal);

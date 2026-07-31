@@ -24,7 +24,7 @@ function event(overrides: { groupId?: string; mentioned?: boolean; webhookEventI
     message: {
       id: "message-e2e-1",
       type: "text",
-      text: "@running-bot 明天適合跑步嗎？",
+      text: "@running-bot 測試問題",
       mention: { mentionees: overrides.mentioned === false ? [] : [{ isSelf: true }] },
     },
   };
@@ -72,8 +72,15 @@ describe("signed LINE webhook to completed reply", () => {
         return Response.json({ model: "test/model", choices: [{ message: { content: "可以，記得補水。" } }] });
       }
       if (url.includes("api.line.me")) {
-        const prepared = await db.prepare("SELECT status, prepared_status, answer, model FROM questions WHERE webhook_event_id=?1").bind("event-e2e-1").first();
-        expect(prepared).toEqual({ status: "processing", prepared_status: "answered", answer: "可以，記得補水。", model: "test/model" });
+        const prepared = await db.prepare("SELECT status, prepared_status, answer, model FROM questions WHERE webhook_event_id=?1")
+          .bind("event-e2e-1")
+          .first();
+        expect(prepared).toEqual({
+          status: "processing",
+          prepared_status: "answered",
+          answer: "可以，記得補水。",
+          model: "test/model",
+        });
         lineCalls.push(init ?? {});
         return new Response(null, { status: 200 });
       }
@@ -113,7 +120,7 @@ describe("signed LINE webhook to completed reply", () => {
     expect(lineCalls).toHaveLength(1);
     expect(JSON.parse(String(lineCalls[0]!.body))).toEqual({ replyToken: "reply-e2e-1", messages: [{ type: "text", text: "可以，記得補水。" }] });
     const rows = await db.prepare("SELECT webhook_event_id, status, question, answer FROM questions").all();
-    expect(rows.results).toEqual([{ webhook_event_id: "event-e2e-1", status: "answered", question: "@running-bot 明天適合跑步嗎？", answer: "可以，記得補水。" }]);
+    expect(rows.results).toEqual([{ webhook_event_id: "event-e2e-1", status: "answered", question: "@running-bot 測試問題", answer: "可以，記得補水。" }]);
   });
 
   it.each([

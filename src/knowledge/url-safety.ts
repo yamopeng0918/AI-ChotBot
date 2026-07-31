@@ -28,7 +28,7 @@ export class TavilySafeUrlFetcher implements SafeUrlFetcher {
     const requested = normalizeKnowledgeUrl(value);
     const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 10_000); let response: Response;
     try {
-      response = await this.fetcher(ENDPOINT, {
+      response = await this.fetcher.call(globalThis, ENDPOINT, {
         method: "POST", headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({ urls: [requested], extract_depth: "basic", format: "markdown" }), signal: controller.signal,
       });

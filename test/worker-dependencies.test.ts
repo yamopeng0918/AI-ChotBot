@@ -16,7 +16,9 @@ describe("createWorker repository injection", () => {
     const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [evidence], insufficient: false, topScore: .9 }) };
     const webSearch = { search: vi.fn() }; const grounded = { answer: vi.fn().mockResolvedValue({ text: "Grounded", model: "m", citations: [], usedEvidenceIds: ["kb"] }) };
     const retrieverFactory = vi.fn(() => retriever), webFactory = vi.fn(() => webSearch), groundedFactory = vi.fn(() => grounded);
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).includes("api.line.me") ? new Response(null, { status: 200 }) : Response.json({ model: "legacy", choices: [{ message: { content: "legacy" } }] }));
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).includes("api.line.me")
+      ? new Response(null, { status: 200 })
+      : Response.json({ model: "legacy", choices: [{ message: { content: "legacy" } }] }));
     const worker = createWorker({ questions: repository, retriever: retrieverFactory, webSearch: webFactory, groundedAnswerService: groundedFactory, fetcher });
     const message = { body: job, ack: vi.fn(), retry: vi.fn() }; const env = { ANALYTICS_HASH_KEY: "analytics-key-at-least-32-bytes", LINE_CHANNEL_ACCESS_TOKEN: "line", OPENROUTER_API_KEY: "key", OPENROUTER_MODEL: "model" } as Env;
     await worker.queue({ messages: [message] } as never, env, {} as ExecutionContext);

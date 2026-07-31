@@ -126,4 +126,26 @@ describe("GroundedAnswerService", () => {
       .resolves.toEqual({ text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model: null, usedEvidenceIds: [] });
     expect(generate).not.toHaveBeenCalled();
   });
+
+  it("calls the injected OpenRouter fetch with globalThis as its receiver", async () => {
+    const fetcher = async function (this: unknown, _url: RequestInfo | URL, _init?: RequestInit) {
+      expect(this).toBe(globalThis);
+      return Response.json({ model: "configured/model", choices: [{ message: { content: valid } }] });
+    };
+    const result = await new OpenRouterGroundedGenerator(fetcher, "key", "configured/model").generate([{ role: "system", content: "rules" }]);
+    expect(result).toEqual({ text: valid, model: "configured/model" });
+  });
+
+  it("does not log provider response bodies", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const generator = new OpenRouterGroundedGenerator(
+      async () => new Response("sensitive-grounded-payload", { status: 500 }),
+      "key",
+      "configured/model",
+    );
+
+    await expect(generator.generate([{ role: "system", content: "rules" }])).rejects.toThrow();
+    expect(JSON.stringify(info.mock.calls)).not.toContain("sensitive-grounded-payload");
+    info.mockRestore();
+  });
 });

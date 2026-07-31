@@ -12,18 +12,18 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe("OpenRouterAnswerService", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("posts the bounded chat request and parses content and usage", async () => {
+  it("posts the bounded responses request and parses content and usage", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({
         model: "provider/model-version",
-        choices: [{ message: { content: "  建議先慢跑。  " } }],
+        choices: [{ message: { content: "  可用答案  " } }],
         usage: { prompt_tokens: 123, completion_tokens: 45 },
       }),
     );
     const service = new OpenRouterAnswerService(fetcher, "secret-key", "configured/model");
 
     await expect(service.answer({ question: "今天怎麼跑？", locale: "zh-TW" })).resolves.toEqual({
-      text: "建議先慢跑。",
+      text: "可用答案",
       model: "provider/model-version",
       inputTokens: 123,
       outputTokens: 45,
@@ -53,7 +53,7 @@ describe("OpenRouterAnswerService", () => {
 
   it("returns null token counts when usage is absent", async () => {
     const fetcher = vi.fn(async () =>
-      jsonResponse({ model: "configured/model", choices: [{ message: { content: "回答" } }] }),
+      jsonResponse({ model: "configured/model", choices: [{ message: { content: "可用答案" } }] }),
     );
 
     await expect(
@@ -105,5 +105,30 @@ describe("OpenRouterAnswerService", () => {
     await vi.advanceTimersByTimeAsync(20_000);
 
     await rejection;
+  });
+
+  it("calls the injected fetch with globalThis as its receiver", async () => {
+    const fetcher = async function (this: unknown, _url: RequestInfo | URL, _init?: RequestInit) {
+      expect(this).toBe(globalThis);
+      return jsonResponse({ model: "configured/model", choices: [{ message: { content: "可用答案" } }] });
+    };
+
+    await expect(new OpenRouterAnswerService(fetcher, "key", "configured/model").answer({
+      question: "q",
+      locale: "zh-TW",
+    })).resolves.toMatchObject({ text: "可用答案", model: "configured/model" });
+  });
+
+  it("does not log provider response bodies", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const service = new OpenRouterAnswerService(
+      async () => new Response("sensitive-provider-payload", { status: 500 }),
+      "key",
+      "configured/model",
+    );
+
+    await expect(service.answer({ question: "q", locale: "zh-TW" })).rejects.toThrow();
+    expect(JSON.stringify(info.mock.calls)).not.toContain("sensitive-provider-payload");
+    info.mockRestore();
   });
 });

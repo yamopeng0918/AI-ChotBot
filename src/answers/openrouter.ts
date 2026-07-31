@@ -40,7 +40,7 @@ export class OpenRouterAnswerService implements AnswerService {
     const timeout = setTimeout(() => controller.abort(), 20_000);
 
     try {
-      const response = await this.fetcher("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await this.fetcher.call(globalThis, "https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
@@ -58,23 +58,32 @@ export class OpenRouterAnswerService implements AnswerService {
         signal: controller.signal,
       });
 
+      const raw = await response.text();
       if (response.status === 429) {
+        console.info("openrouter:response", response.status);
         throw new AnswerUnavailableError("rate_limited");
       }
       if (!response.ok) {
+        console.info("openrouter:response", response.status);
         throw new AnswerUnavailableError("provider_error");
       }
 
-      let payload: OpenRouterResponse;
+      let payload: OpenRouterResponse & { error?: unknown };
       try {
-        payload = (await response.json()) as OpenRouterResponse;
+        payload = JSON.parse(raw) as OpenRouterResponse & { error?: unknown };
       } catch {
+        console.info("openrouter:malformed");
         throw new AnswerUnavailableError("provider_error");
       }
 
-      const rawContent = payload.choices?.[0]?.message?.content;
+      if (payload.error) {
+        console.info("openrouter:payload-error");
+      }
+      const choice = payload.choices?.[0];
+      const rawContent = choice?.message?.content;
       const text = typeof rawContent === "string" ? rawContent.trim() : "";
       if (!text) {
+        console.info("openrouter:empty-content");
         throw new AnswerUnavailableError("provider_error");
       }
 

@@ -113,6 +113,7 @@ return {
   },
   async queue(batch: MessageBatch<QuestionJob | IngestionJobMessage>, env: Env, _context: ExecutionContext) {
     const fetcher = overrides.fetcher ?? env.FETCHER ?? fetch;
+    console.info("queue:batch", batch.messages.length);
     const injectedKnowledgeAnswering = overrides.retriever && overrides.webSearch && overrides.groundedAnswerService ? {
       retriever: typeof overrides.retriever === "function" ? overrides.retriever(env) : overrides.retriever,
       webSearch: typeof overrides.webSearch === "function" ? overrides.webSearch(env) : overrides.webSearch,
@@ -139,14 +140,18 @@ return {
     for (const message of batch.messages) {
       try {
         if (isIngestionJob(message.body)) {
+          console.info("queue:ingestion", message.body.jobId, message.body.kind);
           const result = await processIngestionJob(message.body, ingestionFor(env));
           if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
           continue;
         }
-        if (!isQuestionJob(message.body)) { message.retry({ delaySeconds: 1 }); continue; }
+        if (!isQuestionJob(message.body)) { console.info("queue:unknown"); message.retry({ delaySeconds: 1 }); continue; }
+        console.info("queue:question", message.body.webhookEventId);
         const result = await processQuestion(message.body, dependencies);
+        console.info("queue:result", message.body.webhookEventId, result.disposition, "status" in result ? result.status ?? "" : "");
         if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
       } catch {
+        console.info("queue:unexpected-error");
         message.retry({ delaySeconds: 1 });
       }
     }

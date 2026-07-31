@@ -15,16 +15,23 @@ export class OpenRouterGroundedGenerator {
   async generate(messages: Message[]): Promise<{ text: string; model: string }> {
     const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 20_000);
     try {
-      const response = await this.fetcher("https://openrouter.ai/api/v1/chat/completions", { method: "POST",
+      const response = await this.fetcher.call(globalThis, "https://openrouter.ai/api/v1/chat/completions", { method: "POST",
         headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ model: this.model, messages, response_format: { type: "json_object" }, temperature: 0, max_tokens: 900 }), signal: controller.signal });
-      if (!response.ok) throw new Error("grounded model unavailable");
-      const payload: unknown = await response.json();
+      const raw = await response.text();
+      if (!response.ok) {
+        console.info("openrouter:grounded-response", response.status);
+        throw new Error("grounded model unavailable");
+      }
+      const payload: unknown = JSON.parse(raw);
       if (!record(payload)) throw new Error("malformed grounded response");
-      const choices = payload.choices;
+      const choices = (payload as { choices?: unknown }).choices;
       const first = Array.isArray(choices) && record(choices[0]) ? choices[0] : null;
       const message = first && record(first.message) ? first.message : null;
-      if (!message || typeof message.content !== "string" || !message.content.trim()) throw new Error("malformed grounded response");
+      if (!message || typeof message.content !== "string" || !message.content.trim()) {
+        console.info("openrouter:grounded-empty");
+        throw new Error("malformed grounded response");
+      }
       return { text: message.content, model: typeof payload.model === "string" && payload.model ? payload.model : this.model };
     } finally { clearTimeout(timeout); }
   }

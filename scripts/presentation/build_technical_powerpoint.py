@@ -8,6 +8,7 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Inches, Pt
 
 try:
@@ -94,6 +95,9 @@ def _connector(slide, name: str, start_x: float, start_y: float, end_x: float, e
     )
     shape.name = name
     _set_line(shape, color, 1.8)
+    arrow = OxmlElement("a:tailEnd")
+    arrow.set("type", "triangle")
+    shape._element.spPr.ln.append(arrow)
     return shape
 
 
@@ -108,7 +112,7 @@ def _base_slide(presentation: Presentation, source) -> object:
     accent.line.fill.background()
     _text(slide, f"section-{source.number}", "AI-CHOTBOT · TECHNICAL ACHIEVEMENTS", 0.7, 0.24, 5.0, 0.22, size=8.5, color=TEAL, bold=True)
     _text(slide, f"title-{source.number}", source.title, 0.7, 0.52, 12.0, 0.5, size=25, bold=True)
-    _card(slide, f"conclusion-{source.number}", source.bullets[0], 0.7, 1.16, 11.95, 0.58, line=TEAL, size=15.5, bold=True)
+    _card(slide, f"conclusion-{source.number}", source.bullets[0], 0.7, 1.16, 11.95, 0.58, line=TEAL, size=16, bold=True)
     _text(slide, f"footer-{source.number}", "16 頁技術成果與工程治理簡報", 0.7, 7.08, 5.0, 0.18, size=8, color=MUTED)
     _text(slide, f"page-number-{source.number}", f"{source.number:02d} / 16", 11.7, 7.04, 0.8, 0.2, size=8.5, color=MUTED, bold=True, align=PP_ALIGN.RIGHT)
     slide.notes_slide.notes_text_frame.text = source.speaker_notes
@@ -116,10 +120,10 @@ def _base_slide(presentation: Presentation, source) -> object:
 
 
 def _source_bullets(slide, source, *, top: float = 2.05, compact: bool = False) -> None:
-    columns = 2
+    columns = 3 if compact else 2
     rows = (len(source.bullets) + columns - 1) // columns
-    width = 5.82
-    height = 0.52 if compact else (4.55 - 0.16 * (rows - 1)) / rows
+    width = 3.82 if compact else 5.82
+    height = 0.56 if compact else (4.55 - 0.16 * (rows - 1)) / rows
     for index, bullet in enumerate(source.bullets, start=1):
         column = (index - 1) % columns
         row = (index - 1) // columns
@@ -127,12 +131,12 @@ def _source_bullets(slide, source, *, top: float = 2.05, compact: bool = False) 
             slide,
             f"bullet-{source.number}-{index}",
             bullet,
-            0.7 + column * 6.12,
-            top + row * (height + 0.16),
+            0.7 + column * (4.02 if compact else 6.12),
+            top + row * (height + (0.12 if compact else 0.16)),
             width,
             height,
             line=BLUE if index % 2 == 0 else TEAL,
-            size=12.5 if compact else 15.5,
+            size=16,
         )
 
 
@@ -148,10 +152,11 @@ def _architecture(slide) -> None:
 
 
 def _message_flow(slide) -> None:
-    for index in range(6):
+    labels = ("Webhook 接收", "簽章與群組 mention 驗證", "Queue 入列", "AI 或資料來源處理", "LINE reply 與 push fallback", "D1 與觀測紀錄")
+    for index, label in enumerate(labels):
         column = index % 3
         row = index // 3
-        _card(slide, f"message-flow-step-{index + 1}", f"資料流程 {index + 1}", 0.85 + column * 4.05, 2.2 + row * 1.0, 2.5, 0.52, line=BLUE, size=13, bold=True, align=PP_ALIGN.CENTER)
+        _card(slide, f"message-flow-step-{index + 1}", label, 0.85 + column * 4.05, 2.2 + row * 1.0, 2.5, 0.52, line=BLUE, size=12.5, bold=True, align=PP_ALIGN.CENTER)
     points = ((3.35, 2.46, 4.9, 2.46), (7.4, 2.46, 8.95, 2.46), (10.2, 2.72, 10.2, 3.2), (8.95, 3.46, 7.4, 3.46), (4.9, 3.46, 3.35, 3.46))
     for index, point in enumerate(points, start=1):
         _connector(slide, f"message-flow-connector-{index}", *point, color=BLUE)
@@ -173,17 +178,38 @@ def _reliability(slide) -> None:
             _connector(slide, f"reliability-connector-{index}", 1.0 + (index - 1) * 4.05 + 3.0, 2.7, 1.0 + index * 4.05, 2.7, color=color)
 
 
+def _model_boundary(slide) -> None:
+    values = (("primary", "主要模型", TEAL), ("fallback", "備援模型", BLUE), ("policy", "回答政策", AMBER))
+    for index, (name, text, color) in enumerate(values):
+        _card(slide, f"model-boundary-{name}", text, 0.9 + index * 4.1, 2.35, 3.05, 0.68, line=color, size=14, bold=True, align=PP_ALIGN.CENTER)
+
+
+def _weather_cache_flow(slide) -> None:
+    values = (("intent", "意圖辨識"), ("cache-read", "快取讀取"), ("provider", "Open-Meteo"), ("cache-write", "快取寫入"))
+    for index, (name, text) in enumerate(values):
+        _card(slide, f"weather-cache-step-{name}", text, 0.85 + index * 3.1, 2.35, 2.45, 0.62, line=TEAL if index < 2 else BLUE, size=13.5, bold=True, align=PP_ALIGN.CENTER)
+        if index:
+            _connector(slide, f"weather-cache-connector-{index}", 0.85 + (index - 1) * 3.1 + 2.45, 2.66, 0.85 + index * 3.1, 2.66, color=BLUE)
+
+
 def _data_lifecycle(slide) -> None:
     values = (("question-record", "D1 問題紀錄"), ("weather-cache", "weather cache"), ("group-settings", "group settings"), ("metrics", "metrics"), ("lifecycle", "30-day lifecycle"))
     for index, (name, text) in enumerate(values):
         _card(slide, f"data-node-{name}", text, 0.8 + (index % 3) * 4.05, 2.05 + (index // 3) * 0.85, 3.25, 0.53, line=BLUE if index % 2 else TEAL, size=13, bold=True, align=PP_ALIGN.CENTER)
 
 
+def _privacy_layers(slide) -> None:
+    values = (("logs", "Workers Logs", TEAL), ("d1", "D1", BLUE), ("secrets", "Cloudflare secrets", AMBER))
+    for index, (name, text, color) in enumerate(values):
+        _card(slide, f"privacy-layer-{name}", text, 0.9 + index * 4.1, 2.35, 3.05, 0.68, line=color, size=14, bold=True, align=PP_ALIGN.CENTER)
+
+
 def _observability(slide) -> None:
     _card(slide, "observability-correlation-webhook", "webhookEventId", 0.85, 2.05, 2.4, 0.5, line=TEAL, size=13, bold=True, align=PP_ALIGN.CENTER)
     _card(slide, "observability-correlation-operation", "operationId", 3.45, 2.05, 2.4, 0.5, line=BLUE, size=13, bold=True, align=PP_ALIGN.CENTER)
-    for index in range(5):
-        _card(slide, f"observability-event-{index + 1}", f"可觀測事件 {index + 1}", 0.85 + index * 2.38, 3.05, 2.0, 0.5, line=AMBER, size=12.5, align=PP_ALIGN.CENTER)
+    events = ("webhook.enqueue.completed", "question.started", "storage.claim.completed", "answer.completed", "line.reply.completed")
+    for index, event in enumerate(events):
+        _card(slide, f"observability-event-{index + 1}", event, 0.85 + index * 2.38, 3.05, 2.0, 0.5, line=AMBER, size=12, align=PP_ALIGN.CENTER)
         if index:
             _connector(slide, f"observability-connector-{index}", 0.85 + (index - 1) * 2.38 + 2.0, 3.3, 0.85 + index * 2.38, 3.3, color=AMBER)
 
@@ -207,7 +233,9 @@ def _maturity_matrix(slide) -> None:
 
 def _roadmap(slide, source) -> None:
     for index, bullet in enumerate(source.bullets, start=1):
-        _card(slide, f"roadmap-step-{index}", bullet, 0.85 + (index - 1) * 2.45, 2.1, 2.15, 1.0, line=TEAL if index < 4 else AMBER, size=12.5, bold=True, align=PP_ALIGN.CENTER)
+        number, body = bullet.split(". ", 1)
+        label = f"{number}. {body.split('：', 1)[0]}"
+        _card(slide, f"roadmap-step-{index}", label, 0.85 + (index - 1) * 2.45, 2.1, 2.15, 1.0, line=TEAL if index < 4 else AMBER, size=16, bold=True, align=PP_ALIGN.CENTER)
         if index > 1:
             _connector(slide, f"roadmap-connector-{index - 1}", 0.85 + (index - 2) * 2.45 + 2.15, 2.6, 0.85 + (index - 1) * 2.45, 2.6, color=TEAL if index < 4 else AMBER)
 
@@ -222,7 +250,7 @@ def build_technical_presentation(source_path: Path, output_path: Path) -> None:
     presentation.slide_width = Inches(40 / 3)
     presentation.slide_height = Inches(7.5)
 
-    special_numbers = {3, 4, 5, 6, 9, 11, 12, 13, 14, 16}
+    special_numbers = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16}
     for source in source_slides:
         slide = _base_slide(presentation, source)
         _source_bullets(slide, source, top=5.55 if source.number in special_numbers else 2.05, compact=source.number in special_numbers)
@@ -234,8 +262,14 @@ def build_technical_presentation(source_path: Path, output_path: Path) -> None:
             _worker_flow(slide)
         elif source.number == 6:
             _reliability(slide)
+        elif source.number == 7:
+            _model_boundary(slide)
+        elif source.number == 8:
+            _weather_cache_flow(slide)
         elif source.number == 9:
             _data_lifecycle(slide)
+        elif source.number == 10:
+            _privacy_layers(slide)
         elif source.number == 11:
             _observability(slide)
         elif source.number == 12:

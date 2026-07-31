@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from pptx import Presentation
-from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
-from pptx.util import Inches
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE, MSO_SHAPE_TYPE
+from pptx.oxml.ns import qn
+from pptx.oxml.xmlchemy import OxmlElement
+from pptx.util import Inches, Pt
 
 from scripts.presentation.build_client_powerpoint import parse_markdown
 from scripts.presentation.build_technical_powerpoint import build_technical_presentation
@@ -19,6 +23,18 @@ from scripts.presentation.verify_technical_powerpoint import verify_technical_pr
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_PATH = ROOT / "docs/presentations/2026-07-30-technical-achievements-presentation.md"
 ONE_PIXEL_PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0dIDAT\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
+
+
+def _roadmap_label(bullet: str) -> str:
+    number, body = bullet.split(". ", 1)
+    return f"{number}. {body.split('：', 1)[0]}"
+
+
+def _triangle_tail(connector) -> None:
+    connector.line.width = Pt(1)
+    tail = OxmlElement("a:tailEnd")
+    tail.set("type", "triangle")
+    connector._element.spPr.ln.append(tail)
 
 
 class TechnicalSourceTests(unittest.TestCase):
@@ -37,6 +53,11 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         shape = shapes.add_textbox(Inches(0.4), Inches(0.4), Inches(8), Inches(0.35))
         shape.name = name
         shape.text = text
+        if text:
+            run = shape.text_frame.paragraphs[0].runs[0]
+            run.font.name = "Microsoft JhengHei"
+            run.font.size = Pt(16)
+            run.font.color.rgb = RGBColor.from_string("F4F8FC")
 
     def _write_deck(
         self, destination: Path, *, title_override: str | None = None,
@@ -51,14 +72,26 @@ class TechnicalVerifierContractTests(unittest.TestCase):
     ) -> None:
         presentation = Presentation()
         presentation.slides._sldIdLst.clear()
+        presentation.slide_width = Inches(40 / 3)
+        presentation.slide_height = Inches(7.5)
         source_slides = parse_markdown(SOURCE_PATH)
         for source in source_slides:
             slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            background = slide.background.fill
+            background.solid()
+            background.fore_color.rgb = RGBColor.from_string("081A2E")
+            accent = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, Inches(40 / 3), Inches(.08))
+            accent.name = f"accent-{source.number}"
+            accent.fill.solid()
+            accent.fill.fore_color.rgb = RGBColor.from_string("21D4B4")
+            accent.line.fill.background()
             self._add_text(slide.shapes, f"title-{source.number}", title_override if source.number == 1 and title_override is not None else source.title)
             self._add_text(slide.shapes, f"conclusion-{source.number}", conclusion_override if source.number == 1 and conclusion_override is not None else source.bullets[0])
             for index, bullet in enumerate(source.bullets, start=1):
                 text = bullet_override if source.number == 1 and index == 1 and bullet_override is not None else bullet
                 self._add_text(slide.shapes, f"bullet-{source.number}-{index}", text)
+            self._add_text(slide.shapes, f"footer-{source.number}", "footer")
+            self._add_text(slide.shapes, f"page-number-{source.number}", str(source.number))
             slide.notes_slide.notes_text_frame.text = notes_override if source.number == 1 and notes_override is not None else source.speaker_notes
 
         def special(slide_number: int, name: str, text: str) -> None:
@@ -72,8 +105,9 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         for index in range(6):
             connector = presentation.slides[2].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
             connector.name = f"architecture-connector-{index + 1}"
-        for index in range(6):
-            special(4, f"message-flow-step-{index + 1}", f"資料流程 {index + 1}")
+            _triangle_tail(connector)
+        for index, text in enumerate(("Webhook 接收", "簽章與群組 mention 驗證", "Queue 入列", "AI 或資料來源處理", "LINE reply 與 push fallback", "D1 與觀測紀錄"), start=1):
+            special(4, f"message-flow-step-{index}", text)
         for index in range(5):
             name = f"message-flow-connector-{index + 1}"
             if index == 0 and message_connector_replacement == "textbox":
@@ -84,17 +118,31 @@ class TechnicalVerifierContractTests(unittest.TestCase):
             else:
                 connector = presentation.slides[3].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
                 connector.name = name
+                _triangle_tail(connector)
         if duplicate_message_connector:
             connector = presentation.slides[3].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
             connector.name = "message-flow-connector-1-copy"
+            _triangle_tail(connector)
+        for index in range(3):
+            connector = presentation.slides[4].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+            connector.name = f"worker-flow-connector-{index + 1}"
+            _triangle_tail(connector)
         for name in ("retry", "dlq", "deduplication"):
             special(6, f"reliability-node-{name}", name)
+        for index in range(2):
+            connector = presentation.slides[5].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+            connector.name = f"reliability-connector-{index + 1}"
+            _triangle_tail(connector)
         for name, text in (("question-record", "D1 問題紀錄"), ("weather-cache", "weather cache"), ("group-settings", "group settings"), ("metrics", "metrics"), ("lifecycle", "lifecycle")):
             special(9, f"data-node-{name}", text)
         special(11, "observability-correlation-webhook", "webhookEventId")
         special(11, "observability-correlation-operation", "operationId")
-        for index in range(5):
-            special(11, f"observability-event-{index + 1}", f"可觀測事件 {index + 1}")
+        for index, text in enumerate(("webhook.enqueue.completed", "question.started", "storage.claim.completed", "answer.completed", "line.reply.completed"), start=1):
+            special(11, f"observability-event-{index}", text)
+        for index in range(1, 5):
+            connector = presentation.slides[10].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+            connector.name = f"observability-connector-{index}"
+            _triangle_tail(connector)
         for name, text in (("main", "主線 134 通過"), ("knowledge", "知識搜尋 421 通過"), ("timeout", "1 項超過 5 秒"), ("predeploy", "設定檢查待更新")):
             special(12, f"quality-gate-{name}", quality_override if name == "main" and quality_override is not None else text)
         for name in ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer"):
@@ -102,7 +150,21 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         special(13, "development-status-13", "開發中")
         special(14, "maturity-matrix-14", maturity_override or "已完成｜開發中｜待合併前驗證｜待正式環境驗證")
         for index in range(1, 6):
-            special(16, f"roadmap-step-{index}", roadmap_override if index == 1 and roadmap_override is not None else source_slides[15].bullets[index - 1])
+            special(16, f"roadmap-step-{index}", roadmap_override if index == 1 and roadmap_override is not None else _roadmap_label(source_slides[15].bullets[index - 1]))
+        for index in range(1, 5):
+            connector = presentation.slides[15].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+            connector.name = f"roadmap-connector-{index}"
+            _triangle_tail(connector)
+        for name, text in (("primary", "主要模型"), ("fallback", "備援模型"), ("policy", "回答政策")):
+            special(7, f"model-boundary-{name}", text)
+        for name, text in (("intent", "意圖辨識"), ("cache-read", "快取讀取"), ("provider", "Open-Meteo"), ("cache-write", "快取寫入")):
+            special(8, f"weather-cache-step-{name}", text)
+        for index in range(1, 4):
+            connector = presentation.slides[7].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
+            connector.name = f"weather-cache-connector-{index}"
+            _triangle_tail(connector)
+        for name, text in (("logs", "Workers Logs"), ("d1", "D1"), ("secrets", "Cloudflare secrets")):
+            special(10, f"privacy-layer-{name}", text)
         if duplicate_name:
             self._add_text(presentation.slides[0].shapes, duplicate_name, "重複名稱")
         if sensitive_location == "top":
@@ -218,6 +280,52 @@ class GeneratedTechnicalPowerPointTests(unittest.TestCase):
             self.assertEqual(
                 [], verify_technical_presentation(output_path, SOURCE_PATH)
             )
+
+    def test_generated_deck_has_safe_theme_bounds_and_directed_connectors(self) -> None:
+        client_path = ROOT / "docs/presentations/AI-ChotBot-project-progress-client.pptx"
+        before_hash = hashlib.sha256(client_path.read_bytes()).hexdigest()
+        before_mtime = client_path.stat().st_mtime_ns
+        with TemporaryDirectory() as directory:
+            output_path = Path(directory) / "technical.pptx"
+            build_technical_presentation(SOURCE_PATH, output_path)
+            deck = Presentation(output_path)
+
+        self.assertAlmostEqual(13.333, deck.slide_width.inches, places=3)
+        self.assertEqual(7.5, deck.slide_height.inches)
+        for index, slide in enumerate(deck.slides, start=1):
+            self.assertEqual("081A2E", str(slide.background.fill.fore_color.rgb))
+            accent = next(shape for shape in slide.shapes if shape.name == f"accent-{index}")
+            self.assertEqual("21D4B4", str(accent.fill.fore_color.rgb))
+            for shape in slide.shapes:
+                if shape.name.startswith(("accent-", "footer-", "page-number-", "section-")):
+                    continue
+                self.assertLessEqual(shape.left + shape.width, deck.slide_width)
+                self.assertLessEqual(shape.top + shape.height, Inches(7.0))
+        for slide_number, prefix in ((3, "architecture-connector-"), (4, "message-flow-connector-"), (5, "worker-flow-connector-"), (6, "reliability-connector-"), (11, "observability-connector-"), (16, "roadmap-connector-")):
+            for shape in deck.slides[slide_number - 1].shapes:
+                if shape.name.startswith(prefix):
+                    tail = shape._element.spPr.ln.find(qn("a:tailEnd"))
+                    self.assertIsNotNone(tail, f"{shape.name} requires a tail arrow")
+                    self.assertEqual("triangle", tail.get("type"))
+        self.assertEqual(before_hash, hashlib.sha256(client_path.read_bytes()).hexdigest())
+        self.assertEqual(before_mtime, client_path.stat().st_mtime_ns)
+
+    def test_generated_deck_has_semantic_special_visuals_and_short_roadmap_labels(self) -> None:
+        with TemporaryDirectory() as directory:
+            output_path = Path(directory) / "technical.pptx"
+            build_technical_presentation(SOURCE_PATH, output_path)
+            deck = Presentation(output_path)
+
+        flow = deck.slides[3]
+        expected_flow = ("Webhook 接收", "簽章與群組 mention 驗證", "Queue 入列", "AI 或資料來源處理", "LINE reply 與 push fallback", "D1 與觀測紀錄")
+        self.assertEqual(expected_flow, tuple(next(shape.text for shape in flow.shapes if shape.name == f"message-flow-step-{index}") for index in range(1, 7)))
+        events = ("webhook.enqueue.completed", "question.started", "storage.claim.completed", "answer.completed", "line.reply.completed")
+        self.assertEqual(events, tuple(next(shape.text for shape in deck.slides[10].shapes if shape.name == f"observability-event-{index}") for index in range(1, 6)))
+        for slide_number, names in ((7, ("model-boundary-primary", "model-boundary-fallback", "model-boundary-policy")), (8, ("weather-cache-step-intent", "weather-cache-step-cache-read", "weather-cache-step-provider", "weather-cache-step-cache-write")), (10, ("privacy-layer-logs", "privacy-layer-d1", "privacy-layer-secrets"))):
+            actual_names = {shape.name for shape in deck.slides[slide_number - 1].shapes}
+            self.assertTrue(set(names).issubset(actual_names))
+        source = parse_markdown(SOURCE_PATH)
+        self.assertEqual(tuple(_roadmap_label(bullet) for bullet in source[15].bullets), tuple(next(shape.text for shape in deck.slides[15].shapes if shape.name == f"roadmap-step-{index}") for index in range(1, 6)))
 
 
 if __name__ == "__main__":

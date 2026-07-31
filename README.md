@@ -48,6 +48,24 @@ This environment has no PowerPoint/LibreOffice renderer. Structural
 verification is not equivalent to a real render. Before client delivery, open
 the deck in PowerPoint/LibreOffice and inspect every slide for 換行、重疊與字級.
 
+## Technical PowerPoint
+
+Regenerate the editable technical-achievements deck, then validate its source
+coverage, editable shapes, notes, geometry, text density, and OOXML package:
+
+```powershell
+python scripts/presentation/build_technical_powerpoint.py
+python scripts/presentation/verify_technical_powerpoint.py
+```
+
+The delivery file is
+`docs/presentations/AI-ChotBot-technical-achievements.pptx`.
+
+No PowerPoint or LibreOffice renderer is available in this environment.
+The OOXML fallback checks are not a visual playback review; before technical
+delivery, open the deck in PowerPoint/LibreOffice and inspect every slide for
+換行、重疊與字級。
+
 ## Provision Cloudflare
 
 1. Authenticate:

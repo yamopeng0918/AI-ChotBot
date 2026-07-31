@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import sys
+import zipfile
 
+from lxml import etree
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
@@ -41,6 +43,37 @@ def _iter_shapes(shapes):
         yield shape
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             yield from _iter_shapes(shape.shapes)
+
+
+def _validate_ooxml(pptx_path: Path) -> list[str]:
+    """Check ZIP integrity and reject packaged content outside this deck contract."""
+    errors: list[str] = []
+    try:
+        with zipfile.ZipFile(pptx_path) as archive:
+            bad_member = archive.testzip()
+            if bad_member:
+                errors.append(f"OOXML CRC check failed for {bad_member}")
+            names = archive.namelist()
+            lowered = [name.casefold() for name in names]
+            if any(name.startswith("ppt/media/") for name in lowered):
+                errors.append("OOXML package must not contain image or media parts")
+            if any("vbaproject" in name for name in lowered):
+                errors.append("OOXML package must not contain VBA parts")
+            for name in names:
+                if not name.casefold().endswith((".xml", ".rels")):
+                    continue
+                try:
+                    root = etree.fromstring(archive.read(name))
+                except (etree.XMLSyntaxError, zipfile.BadZipFile) as error:
+                    errors.append(f"OOXML XML cannot be parsed: {name}: {error}")
+                    continue
+                if name.casefold().endswith(".rels"):
+                    for relationship in root:
+                        if relationship.get("TargetMode") == "External":
+                            errors.append(f"OOXML external relationship is forbidden: {name}")
+    except (OSError, zipfile.BadZipFile) as error:
+        errors.append(f"OOXML ZIP cannot be opened: {error}")
+    return errors
 
 
 def _shape_texts(slide) -> list[str]:
@@ -208,6 +241,10 @@ def verify_technical_presentation(pptx_path: Path, source_path: Path) -> list[st
     source_slides, errors = _validate_source(source_path)
     if not pptx_path.is_file():
         return [*errors, f"Technical PowerPoint does not exist: {pptx_path}"]
+    ooxml_errors = _validate_ooxml(pptx_path)
+    if any(error.startswith(("OOXML ZIP", "OOXML CRC", "OOXML XML")) for error in ooxml_errors):
+        return [*errors, *ooxml_errors]
+    errors.extend(ooxml_errors)
     try:
         presentation = Presentation(pptx_path)
     except Exception as error:  # pragma: no cover
@@ -229,6 +266,8 @@ def verify_technical_presentation(pptx_path: Path, source_path: Path) -> list[st
         if len(accents) != 1 or len(exact_accents) != 1 or _rgb_value(exact_accents[0].fill.fore_color) != TEAL:
             errors.append(f"Slide {index} needs one visible teal {TEAL} accent")
         for shape in _iter_shapes(slide.shapes):
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                errors.append(f"Slide {index} must not contain images")
             if shape.name.startswith(DECORATIVE_PREFIXES):
                 continue
             if shape.left < 0 or shape.top < 0 or shape.left + shape.width > presentation.slide_width or shape.top + shape.height > presentation.slide_height:

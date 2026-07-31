@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import zipfile
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -283,6 +284,44 @@ class TechnicalVerifierContractTests(unittest.TestCase):
 
     def test_rejects_a_narrow_long_source_bullet_card(self) -> None:
         self.assertIn("density", self._errors(narrow_bullet=True))
+
+    def test_rejects_picture_anywhere_in_the_deck(self) -> None:
+        self.assertIn(
+            "image",
+            self._errors(message_connector_replacement="picture"),
+        )
+
+    def test_rejects_external_ooxml_relationship(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "deck.pptx"
+            self._write_deck(path)
+            with zipfile.ZipFile(path, "a") as archive:
+                archive.writestr(
+                    "ppt/slides/_rels/slide1.xml.rels",
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId99" Type="urn:test" Target="https://example.test" TargetMode="External"/></Relationships>',
+                )
+            errors = "\n".join(verify_technical_presentation(path, SOURCE_PATH)).lower()
+        self.assertIn("external", errors)
+
+    def test_rejects_vba_or_media_parts(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "deck.pptx"
+            self._write_deck(path)
+            with zipfile.ZipFile(path, "a") as archive:
+                archive.writestr("ppt/vbaProject.bin", b"not a macro")
+                archive.writestr("ppt/media/clip.mp4", b"not media")
+            errors = "\n".join(verify_technical_presentation(path, SOURCE_PATH)).lower()
+        self.assertIn("vba", errors)
+        self.assertIn("media", errors)
+
+    def test_rejects_invalid_relationship_xml(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "deck.pptx"
+            self._write_deck(path)
+            with zipfile.ZipFile(path, "a") as archive:
+                archive.writestr("ppt/slides/_rels/slide1.xml.rels", "<Relationships>")
+            errors = "\n".join(verify_technical_presentation(path, SOURCE_PATH)).lower()
+        self.assertIn("ooxml", errors)
 
 
 class GeneratedTechnicalPowerPointTests(unittest.TestCase):

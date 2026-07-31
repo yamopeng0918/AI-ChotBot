@@ -31,6 +31,21 @@ it("enables production logs and explicitly disables phase-one traces", () => {
 });
 
 describe("createWorker repository injection", () => {
+  it("uses injected knowledge-answering factories without production bindings", async () => {
+    const repository = { claim: vi.fn().mockResolvedValue({ state: "claimed", leaseToken: "lease", leaseUntil: "2026-07-18T00:01:00.000Z", createdAt: job.receivedAt, expiresAt: "2026-08-18T00:00:00.000Z" }), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(), purgeExpired: vi.fn() };
+    const evidence = { id: "kb", sourceType: "knowledge", title: "Guide", url: null, text: "Answer.", pageNumber: 1, sectionPath: null, paragraphIndex: null, retrievedAt: "now", score: .9 } as const;
+    const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [evidence], insufficient: false, topScore: .9 }) };
+    const webSearch = { search: vi.fn() }; const grounded = { answer: vi.fn().mockResolvedValue({ text: "Grounded", model: "m", citations: [], usedEvidenceIds: ["kb"] }) };
+    const retrieverFactory = vi.fn(() => retriever), webFactory = vi.fn(() => webSearch), groundedFactory = vi.fn(() => grounded);
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).includes("api.line.me")
+      ? new Response(null, { status: 200 })
+      : Response.json({ model: "legacy", choices: [{ message: { content: "legacy" } }] }));
+    const worker = createWorker({ questions: repository, retriever: retrieverFactory, webSearch: webFactory, groundedAnswerService: groundedFactory, fetcher });
+    const message = { body: job, ack: vi.fn(), retry: vi.fn() }; const env = { ANALYTICS_HASH_KEY: "analytics-key-at-least-32-bytes", LINE_CHANNEL_ACCESS_TOKEN: "line", OPENROUTER_API_KEY: "key", OPENROUTER_MODEL: "model" } as Env;
+    await worker.queue({ messages: [message] } as never, env, {} as ExecutionContext);
+    expect(retrieverFactory).toHaveBeenCalledWith(env); expect(webFactory).toHaveBeenCalledWith(env); expect(groundedFactory).toHaveBeenCalledWith(env);
+    expect(grounded.answer).toHaveBeenCalledWith(expect.objectContaining({ evidence: [evidence] })); expect(message.ack).toHaveBeenCalledOnce();
+  });
   it("uses the injected repository in the queue consumer", async () => {
     const repository = {
       claim: vi.fn().mockResolvedValue({ state: "completed" }),
@@ -94,7 +109,7 @@ describe("createWorker repository injection", () => {
       MESSAGE_QUEUE: { send: vi.fn() } as never,
       DB: {} as D1Database,
       AI: { run: vi.fn() } as never,
-    } as Env;
+    } as unknown as Env;
 
     await worker.queue({ messages: [message] } as never, env, {} as ExecutionContext);
 

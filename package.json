@@ -6,8 +6,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --sequence.concurrent=false",
     "test:e2e": "vitest run test/e2e/webhook-to-reply.test.ts",
+    "test:e2e:knowledge": "vitest run test/e2e/knowledge-search.test.ts",
+    "test:quality:knowledge": "vitest run test/quality/knowledge-evaluation.test.ts",
     "test:watch": "vitest",
     "types:bindings": "wrangler types worker-configuration.d.ts --env-interface WorkerEnv",
     "types:bindings:check": "wrangler types worker-configuration.d.ts --env-interface WorkerEnv --check",

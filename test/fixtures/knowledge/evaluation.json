@@ -1,0 +1,452 @@
+[
+  {
+    "question": "Where is the race start 1?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-1",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-1", "parking-1", "water-1", "finish-1", "course-map-1", "other-1"]
+  },
+  {
+    "question": "Where is the race start 2?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-2",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-2", "parking-2", "water-2", "finish-2", "course-map-2", "other-2"]
+  },
+  {
+    "question": "Where is the race start 3?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-3",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-3", "parking-3", "water-3", "finish-3", "course-map-3", "other-3"]
+  },
+  {
+    "question": "Where is the race start 4?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-4",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-4", "parking-4", "water-4", "finish-4", "course-map-4", "other-4"]
+  },
+  {
+    "question": "Where is the race start 5?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-5",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-5", "parking-5", "water-5", "finish-5", "course-map-5", "other-5"]
+  },
+  {
+    "question": "Where is the race start 6?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-6",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-6", "parking-6", "water-6", "finish-6", "course-map-6", "other-6"]
+  },
+  {
+    "question": "Where is the race start 7?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-7",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-7", "parking-7", "water-7", "finish-7", "course-map-7", "other-7"]
+  },
+  {
+    "question": "Where is the race start 8?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-8",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-8", "parking-8", "water-8", "finish-8", "course-map-8", "other-8"]
+  },
+  {
+    "question": "Where is the race start 9?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-9",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-9", "parking-9", "water-9", "finish-9", "course-map-9", "other-9"]
+  },
+  {
+    "question": "Where is the race start 10?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "start-line-10",
+    "supportedClaims": ["The race starts at Riverside Park."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["The race starts at Riverside Park.", "Meet by the lake entrance."],
+    "rankedChunks": ["start-line-10", "parking-10", "water-10", "finish-10", "course-map-10", "other-10"]
+  },
+  {
+    "question": "How should I structure week 11 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-11",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-11", "tempo-11", "easy-run-11", "strength-11", "rest-11", "other-11"]
+  },
+  {
+    "question": "How should I structure week 12 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-12",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-12", "tempo-12", "easy-run-12", "strength-12", "rest-12", "other-12"]
+  },
+  {
+    "question": "How should I structure week 13 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-13",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-13", "tempo-13", "easy-run-13", "strength-13", "rest-13", "other-13"]
+  },
+  {
+    "question": "How should I structure week 14 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-14",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-14", "tempo-14", "easy-run-14", "strength-14", "rest-14", "other-14"]
+  },
+  {
+    "question": "How should I structure week 15 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-15",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-15", "tempo-15", "easy-run-15", "strength-15", "rest-15", "other-15"]
+  },
+  {
+    "question": "How should I structure week 16 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-16",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-16", "tempo-16", "easy-run-16", "strength-16", "rest-16", "other-16"]
+  },
+  {
+    "question": "How should I structure week 17 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-17",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-17", "tempo-17", "easy-run-17", "strength-17", "rest-17", "other-17"]
+  },
+  {
+    "question": "How should I structure week 18 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-18",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-18", "tempo-18", "easy-run-18", "strength-18", "rest-18", "other-18"]
+  },
+  {
+    "question": "How should I structure week 19 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-19",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-19", "tempo-19", "easy-run-19", "strength-19", "rest-19", "other-19"]
+  },
+  {
+    "question": "How should I structure week 20 of marathon training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "training-plan-20",
+    "supportedClaims": ["Include one long run, two easy runs, and one strength session."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Include one long run, two easy runs, and one strength session.", "Keep the long run easy."],
+    "rankedChunks": ["training-plan-20", "tempo-20", "easy-run-20", "strength-20", "rest-20", "other-20"]
+  },
+  {
+    "question": "I have sharp knee pain after run 21; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-21",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-21", "rest-21", "ice-21", "assessment-21", "doctor-21", "other-21"]
+  },
+  {
+    "question": "I have sharp knee pain after run 22; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-22",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-22", "rest-22", "ice-22", "assessment-22", "doctor-22", "other-22"]
+  },
+  {
+    "question": "I have sharp knee pain after run 23; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-23",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-23", "rest-23", "ice-23", "assessment-23", "doctor-23", "other-23"]
+  },
+  {
+    "question": "I have sharp knee pain after run 24; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-24",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-24", "rest-24", "ice-24", "assessment-24", "doctor-24", "other-24"]
+  },
+  {
+    "question": "I have sharp knee pain after run 25; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-25",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-25", "rest-25", "ice-25", "assessment-25", "doctor-25", "other-25"]
+  },
+  {
+    "question": "I have sharp knee pain after run 26; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-26",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-26", "rest-26", "ice-26", "assessment-26", "doctor-26", "other-26"]
+  },
+  {
+    "question": "I have sharp knee pain after run 27; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-27",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-27", "rest-27", "ice-27", "assessment-27", "doctor-27", "other-27"]
+  },
+  {
+    "question": "I have sharp knee pain after run 28; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-28",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-28", "rest-28", "ice-28", "assessment-28", "doctor-28", "other-28"]
+  },
+  {
+    "question": "I have sharp knee pain after run 29; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-29",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-29", "rest-29", "ice-29", "assessment-29", "doctor-29", "other-29"]
+  },
+  {
+    "question": "I have sharp knee pain after run 30; should I keep training?",
+    "expectedSource": "knowledge",
+    "expectedChunk": "recovery-30",
+    "supportedClaims": ["Sharp knee pain means you should stop and get assessed."],
+    "expectedAbstention": true,
+    "evidenceTexts": ["Sharp knee pain means you should stop and get assessed.", "Do not run through pain."],
+    "rankedChunks": ["recovery-30", "rest-30", "ice-30", "assessment-30", "doctor-30", "other-30"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 31?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-31",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-31", "forecast-31", "temperature-31", "wind-31", "rain-31", "other-31"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 32?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-32",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-32", "forecast-32", "temperature-32", "wind-32", "rain-32", "other-32"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 33?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-33",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-33", "forecast-33", "temperature-33", "wind-33", "rain-33", "other-33"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 34?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-34",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-34", "forecast-34", "temperature-34", "wind-34", "rain-34", "other-34"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 35?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-35",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-35", "forecast-35", "temperature-35", "wind-35", "rain-35", "other-35"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 36?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-36",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-36", "forecast-36", "temperature-36", "wind-36", "rain-36", "other-36"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 37?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-37",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-37", "forecast-37", "temperature-37", "wind-37", "rain-37", "other-37"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 38?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-38",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-38", "forecast-38", "temperature-38", "wind-38", "rain-38", "other-38"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 39?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-39",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-39", "forecast-39", "temperature-39", "wind-39", "rain-39", "other-39"]
+  },
+  {
+    "question": "What's the weather tomorrow in Taipei for run 40?",
+    "expectedSource": "web",
+    "expectedChunk": "weather-40",
+    "supportedClaims": ["Tomorrow will be dry and mild in Taipei."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Tomorrow will be dry and mild in Taipei.", "No rain is expected."],
+    "rankedChunks": ["weather-40", "forecast-40", "temperature-40", "wind-40", "rain-40", "other-40"]
+  },
+  {
+    "question": "When is the registration deadline for run 41?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-41",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-41", "register-41", "ticket-41", "calendar-41", "alert-41", "other-41"]
+  },
+  {
+    "question": "When is the registration deadline for run 42?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-42",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-42", "register-42", "ticket-42", "calendar-42", "alert-42", "other-42"]
+  },
+  {
+    "question": "When is the registration deadline for run 43?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-43",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-43", "register-43", "ticket-43", "calendar-43", "alert-43", "other-43"]
+  },
+  {
+    "question": "When is the registration deadline for run 44?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-44",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-44", "register-44", "ticket-44", "calendar-44", "alert-44", "other-44"]
+  },
+  {
+    "question": "When is the registration deadline for run 45?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-45",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-45", "register-45", "ticket-45", "calendar-45", "alert-45", "other-45"]
+  },
+  {
+    "question": "When is the registration deadline for run 46?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-46",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-46", "register-46", "ticket-46", "calendar-46", "alert-46", "other-46"]
+  },
+  {
+    "question": "When is the registration deadline for run 47?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-47",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-47", "register-47", "ticket-47", "calendar-47", "alert-47", "other-47"]
+  },
+  {
+    "question": "When is the registration deadline for run 48?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-48",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-48", "register-48", "ticket-48", "calendar-48", "alert-48", "other-48"]
+  },
+  {
+    "question": "When is the registration deadline for run 49?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-49",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-49", "register-49", "ticket-49", "calendar-49", "alert-49", "other-49"]
+  },
+  {
+    "question": "When is the registration deadline for run 50?",
+    "expectedSource": "web",
+    "expectedChunk": "deadline-50",
+    "supportedClaims": ["Registration closes at 23:59 on July 31."],
+    "expectedAbstention": false,
+    "evidenceTexts": ["Registration closes at 23:59 on July 31.", "The portal closes at the deadline."],
+    "rankedChunks": ["deadline-50", "register-50", "ticket-50", "calendar-50", "alert-50", "other-50"]
+  }
+]

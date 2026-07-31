@@ -119,6 +119,7 @@ export class WorkersAiAnswerService implements AnswerService {
 
       const text = responseText(payload);
       if (!text) {
+        console.info("openrouter:empty-content");
         throw new AnswerUnavailableError("provider_error");
       }
 

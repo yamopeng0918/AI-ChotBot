@@ -7,6 +7,11 @@ import type {
 import { classifyIntent } from "../intents/router";
 import { LineReplyError, type LineClient } from "../line/client";
 import type { GroupSettingsRepository } from "../storage/group-settings";
+import { INSUFFICIENT_EVIDENCE_TEXT, type GroundedAnswerService } from "../answers/grounded";
+import type { KnowledgeEvidence } from "../knowledge/types";
+import { decideRetrievalRoute } from "../retrieval/router";
+import type { KnowledgeRetriever, RetrievalResult } from "../retrieval/retriever";
+import type { WebSearchService } from "../search/tavily";
 import type { ClaimResult, QuestionRecord, QuestionsRepository } from "../storage/questions";
 import type { MetricRecord, MetricsSink } from "../telemetry/metrics";
 import type {
@@ -33,6 +38,9 @@ export interface ProcessDependencies {
   logger?: TelemetryLogger;
   pseudonymize(userId: string | null): Promise<string | null>;
   now?: () => Date;
+  retriever?: Pick<KnowledgeRetriever, "retrieve">;
+  webSearch?: WebSearchService;
+  groundedAnswerService?: Pick<GroundedAnswerService, "answer">;
 }
 
 async function recordMetricSafe(metrics: MetricsSink | undefined, metric: MetricRecord): Promise<void> {
@@ -225,13 +233,18 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
       detail: "reused_prepared",
     }, dependencies.now);
   } else {
+    const useKnowledgeAnswering = Boolean(
+      dependencies.retriever &&
+      dependencies.webSearch &&
+      dependencies.groundedAnswerService,
+    );
     const selectedService =
       metricIntent === "weather" && dependencies.weatherService
         ? dependencies.weatherService
         : dependencies.answerService;
 
     let defaultLocation: string | null = null;
-    if (metricIntent === "weather" && dependencies.groupSettings) {
+    if (!useKnowledgeAnswering && metricIntent === "weather" && dependencies.groupSettings) {
       try {
         defaultLocation = await dependencies.groupSettings.getWeatherCity(job.groupId);
       } catch {
@@ -318,12 +331,15 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
       }, dependencies.now);
     };
     try {
-      const answer = await selectedService.answer({
-        question: job.text,
-        locale: "zh-TW",
-        groupId: job.groupId,
-        defaultLocation,
-      }, observeProvider);
+      const answer =
+        useKnowledgeAnswering
+          ? await orchestratedAnswer(job.text, dependencies)
+          : await selectedService.answer({
+              question: job.text,
+              locale: "zh-TW",
+              groupId: job.groupId,
+              defaultLocation,
+            }, observeProvider);
       text = answer.text;
       model = answer.model;
       status = "answered";
@@ -411,7 +427,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
       model,
     }, dependencies.now);
   } catch (error) {
-    const canPushFallback = error instanceof LineReplyError;
+    const canPushFallback = error instanceof LineReplyError && error.status === 400;
     emit(dependencies.logger, {
       event: "line.reply.failed",
       stage: "line",
@@ -423,6 +439,11 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
     }, dependencies.now);
 
     if (!canPushFallback) {
+      if (error instanceof LineReplyError) {
+        try {
+          await dependencies.questions.complete({ ...record, status: "reply_failed" }, leaseToken);
+        } catch {}
+      }
       return retry("line", "line_reply_failed", 1, model);
     }
 
@@ -574,4 +595,22 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
   }, dependencies.now);
 
   return { disposition: "ack", status };
+}
+
+async function orchestratedAnswer(question: string, dependencies: ProcessDependencies): Promise<{ text: string; model: string | null }> {
+  let retrieval: RetrievalResult;
+  try { retrieval = await dependencies.retriever!.retrieve(question, 8); }
+  catch { retrieval = { evidence: [], insufficient: true, topScore: null }; }
+  const route = decideRetrievalRoute({ question, insufficient: retrieval.insufficient, evidenceCount: retrieval.evidence.length, topScore: retrieval.topScore });
+  const evidence: KnowledgeEvidence[] = [...retrieval.evidence]; let webUnavailable = false;
+  if (route.searchWeb) {
+    try { evidence.push(...await dependencies.webSearch!.search(question)); }
+    catch { webUnavailable = true; }
+  }
+  if (evidence.length) return dependencies.groundedAnswerService!.answer({ question, evidence, webUnavailable });
+  if (isClearlyCasual(question)) return dependencies.answerService.answer({ question, locale: "zh-TW" });
+  return { text: INSUFFICIENT_EVIDENCE_TEXT, model: null };
+}
+function isClearlyCasual(question: string): boolean {
+  return /^(?:hi|hello|hey|thanks|thank you|bye|good\s*(?:morning|afternoon|evening|night)|嗨|哈囉|你好|謝謝|再見)[!.。！ ]*$/i.test(question.trim());
 }

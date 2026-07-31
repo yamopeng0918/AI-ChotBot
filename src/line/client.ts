@@ -6,7 +6,7 @@ const MAX_TEXT_CODE_POINTS = 4_500;
 const TRUNCATION_SUFFIX = "…";
 
 export class LineReplyError extends Error {
-  constructor(readonly status: number | null = null) {
+  constructor(readonly status: number | null = null, readonly causeMessage: string | null = null, readonly endpoint: string | null = null) {
     super(status === null ? "LINE reply failed" : `LINE reply failed (${status})`);
     this.name = "LineReplyError";
   }
@@ -52,8 +52,8 @@ export class LineClient {
         },
         body,
       });
-    } catch {
-      throw new LineReplyError();
+    } catch (error) {
+      throw new LineReplyError(null, error instanceof Error ? error.message : String(error), endpoint);
     }
 
     if (!response.ok) throw new LineReplyError(response.status);

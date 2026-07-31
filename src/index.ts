@@ -4,6 +4,7 @@ import { isAdminCommand, parseAdminCommand } from "./admin/commands";
 import { GroupAdminsRepository } from "./admin/group-admins";
 import { handleAdminCommand } from "./admin/handler";
 import { WorkersAiAnswerService } from "./answers/openrouter";
+import { GroundedAnswerService, OpenRouterGroundedGenerator } from "./answers/grounded";
 import type { Env } from "./config";
 import { processQuestion } from "./jobs/process-message";
 import type { QuestionJob } from "./jobs/types";
@@ -22,9 +23,24 @@ import {
   type TelemetryEventInput,
   type TelemetryLogger,
 } from "./telemetry/logger";
+import { registerKnowledgeAdminRoutes, type KnowledgeAdminRepository } from "./knowledge/admin-routes";
+import { KnowledgeRepository } from "./knowledge/repository";
+import { R2KnowledgeObjectStore, type KnowledgeObjectStore } from "./knowledge/storage";
+import type { ValidatedKnowledgeFile } from "./knowledge/file-validation";
+import { TavilySafeUrlFetcher, type SafeUrlFetcher } from "./knowledge/url-safety";
+import { DocumentConverter } from "./knowledge/converter";
+import { EmbeddingService } from "./knowledge/embeddings";
+import { processIngestionJob, type IngestionDependencies } from "./knowledge/ingestion";
+import { KnowledgeVectorStore } from "./knowledge/vector-store";
+import type { IngestionJobMessage } from "./knowledge/types";
+import { KnowledgeRetriever } from "./retrieval/retriever";
+import { TavilySearchService, type WebSearchService } from "./search/tavily";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
+type KnowledgeFactory = (env: Env) => KnowledgeAdminRepository;
+type RetrieverDependency = Pick<KnowledgeRetriever, "retrieve">;
+type GroundedDependency = Pick<GroundedAnswerService, "answer">;
 
 export type WorkerDependencies = {
   fetcher?: typeof fetch;
@@ -35,6 +51,15 @@ export type WorkerDependencies = {
   weatherService?: ProcessDependencies["weatherService"];
   metrics?: ProcessDependencies["metrics"];
   logger?: TelemetryLogger;
+  knowledge?: KnowledgeAdminRepository | KnowledgeFactory;
+  objectStore?: KnowledgeObjectStore | ((env: Env) => KnowledgeObjectStore);
+  ingestionQueue?: Pick<Queue<import("./knowledge/types").IngestionJobMessage>, "send">;
+  validateFile?: (file: File) => Promise<ValidatedKnowledgeFile>;
+  safeUrlFetcher?: SafeUrlFetcher | ((env: Env) => SafeUrlFetcher);
+  ingestion?: IngestionDependencies | ((env: Env) => IngestionDependencies);
+  retriever?: RetrieverDependency | ((env: Env) => RetrieverDependency);
+  webSearch?: WebSearchService | ((env: Env) => WebSearchService);
+  groundedAnswerService?: GroundedDependency | ((env: Env) => GroundedDependency);
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -60,6 +85,21 @@ export function createWorker(overrides: WorkerDependencies = {}) {
   };
   const groupSettingsFor = (env: Env): Pick<GroupSettingsRepository, "getWeatherCity" | "setWeatherCity" | "clearWeatherCity"> =>
     new GroupSettingsRepository(env.DB);
+  const knowledgeFor = (env: Env): KnowledgeAdminRepository => {
+    if (typeof overrides.knowledge === "function") return overrides.knowledge(env);
+    return overrides.knowledge ?? new KnowledgeRepository(env.DB);
+  };
+  const objectStoreFor = (env: Env): KnowledgeObjectStore => typeof overrides.objectStore === "function" ? overrides.objectStore(env) : overrides.objectStore ?? new R2KnowledgeObjectStore(env.FILES);
+
+const safeUrlFetcherFor = (env: Env): SafeUrlFetcher => typeof overrides.safeUrlFetcher === "function" ? overrides.safeUrlFetcher(env) : overrides.safeUrlFetcher ?? new TavilySafeUrlFetcher(overrides.fetcher ?? fetch, env.TAVILY_API_KEY, overrides.now);
+const ingestionFor = (env: Env): IngestionDependencies => {
+  if (typeof overrides.ingestion === "function") return overrides.ingestion(env);
+  if (overrides.ingestion) return overrides.ingestion;
+  const repository = new KnowledgeRepository(env.DB);
+  return { repository, objectStore: new R2KnowledgeObjectStore(env.FILES), converter: new DocumentConverter(env.AI),
+    embeddings: new EmbeddingService(env.AI), vectors: new KnowledgeVectorStore(env.VECTORIZE, (documentId, version) => repository.listVectorIds(documentId, version)), now: overrides.now };
+};
+registerKnowledgeAdminRoutes(app, { repositoryFor: knowledgeFor, objectStoreFor, queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE, validateFile: overrides.validateFile, safeUrlFetcherFor, now: overrides.now });
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 
@@ -197,16 +237,31 @@ return {
   fetch(request, env, context) {
     return app.fetch(request, env, context);
   },
-  async queue(batch: MessageBatch<QuestionJob>, env: Env, _context: ExecutionContext) {
+  async queue(batch: MessageBatch<QuestionJob | IngestionJobMessage>, env: Env, _context: ExecutionContext) {
     const fetcher = overrides.fetcher ?? env.FETCHER ?? fetch;
     const answerService = overrides.answerService ?? new WorkersAiAnswerService(env.AI);
     const weatherService =
       overrides.weatherService ?? new OpenMeteoWeatherService(fetcher, new WeatherCacheRepository(env.DB), overrides.now);
     const metrics = overrides.metrics ?? new D1MetricsRepository(env.DB);
     const groupSettings = groupSettingsFor(env);
+    const injectedKnowledgeAnswering = overrides.retriever && overrides.webSearch && overrides.groundedAnswerService ? {
+      retriever: typeof overrides.retriever === "function" ? overrides.retriever(env) : overrides.retriever,
+      webSearch: typeof overrides.webSearch === "function" ? overrides.webSearch(env) : overrides.webSearch,
+      groundedAnswerService: typeof overrides.groundedAnswerService === "function" ? overrides.groundedAnswerService(env) : overrides.groundedAnswerService,
+    } : null;
+    const knowledgeAnswering = injectedKnowledgeAnswering ?? (env.AI && env.VECTORIZE && env.TAVILY_API_KEY ? (() => {
+      const retrievalRepository = new KnowledgeRepository(env.DB);
+      const groundedGenerator = new OpenRouterGroundedGenerator(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL);
+      return {
+        retriever: new KnowledgeRetriever(new EmbeddingService(env.AI), new KnowledgeVectorStore(env.VECTORIZE), retrievalRepository, { now: () => (overrides.now?.() ?? new Date()).toISOString() }),
+        webSearch: new TavilySearchService(fetcher, env.TAVILY_API_KEY, () => (overrides.now?.() ?? new Date()).toISOString()),
+        groundedAnswerService: new GroundedAnswerService((messages) => groundedGenerator.generate(messages)),
+      };
+    })() : {});
     const dependencies = {
       answerService,
       weatherService,
+      ...knowledgeAnswering,
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
       questions: questionsFor(env),
       groupSettings,
@@ -218,15 +273,45 @@ return {
 
     for (const message of batch.messages) {
       try {
+        if (isIngestionJob(message.body)) {
+          console.info("queue:ingestion", message.body.jobId, message.body.kind);
+          const result = await processIngestionJob(message.body, ingestionFor(env));
+          if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
+          continue;
+        }
+        if (!isQuestionJob(message.body)) {
+          console.info("queue:unknown");
+          message.retry({ delaySeconds: 1 });
+          const item = message.body && typeof message.body === "object"
+            ? message.body as Record<string, unknown>
+            : {};
+          emit({
+            event: "queue.message.retry",
+            stage: "queue",
+            outcome: "retry",
+            ...(typeof item.webhookEventId === "string"
+              ? { webhookEventId: item.webhookEventId }
+              : { operationId: crypto.randomUUID() }),
+            retryDelaySeconds: 1,
+            errorType: "unexpected_error",
+          });
+          continue;
+        }
+        console.info("queue:question", message.body.webhookEventId);
         const result = await processQuestion(message.body, dependencies);
+        console.info("queue:result", message.body.webhookEventId, result.disposition, "status" in result ? result.status ?? "" : "");
         if (result.disposition === "ack") message.ack(); else message.retry({ delaySeconds: result.delaySeconds });
       } catch {
+        console.info("queue:unexpected-error");
         message.retry({ delaySeconds: 1 });
+        const correlation = isQuestionJob(message.body)
+          ? { webhookEventId: message.body.webhookEventId }
+          : { operationId: crypto.randomUUID() };
         emit({
           event: "queue.message.retry",
           stage: "queue",
           outcome: "retry",
-          webhookEventId: message.body.webhookEventId,
+          ...correlation,
           retryDelaySeconds: 1,
           errorType: "unexpected_error",
         });
@@ -258,7 +343,20 @@ return {
       throw new Error("scheduled cleanup failed");
     }
   },
-} satisfies ExportedHandler<Env, QuestionJob>;
+} satisfies ExportedHandler<Env, QuestionJob | IngestionJobMessage>;
+}
+
+function isIngestionJob(value: unknown): value is IngestionJobMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.jobId === "string" && typeof item.documentId === "string"
+    && (item.kind === "ingest" || item.kind === "reindex" || item.kind === "delete");
+}
+function isQuestionJob(value: unknown): value is QuestionJob {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.webhookEventId === "string" && typeof item.messageId === "string"
+    && typeof item.text === "string" && typeof item.receivedAt === "string";
 }
 
 const worker = createWorker();

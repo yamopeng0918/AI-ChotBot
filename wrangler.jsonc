@@ -14,20 +14,34 @@
       "LINE_CHANNEL_ACCESS_TOKEN",
       "LINE_GROUP_ID",
       "ANALYTICS_HASH_KEY",
-      "GROUP_ADMINS_BOOTSTRAP_JSON"
+      "GROUP_ADMINS_BOOTSTRAP_JSON",
+      "OPENROUTER_API_KEY",
+      "OPENROUTER_MODEL",
+      "ADMIN_API_TOKEN",
+      "TAVILY_API_KEY"
     ]
   },
-  "ai": { "binding": "AI" },
   "d1_databases": [{ "binding": "DB", "database_name": "line-bot-diagnostics", "database_id": "37554743-813d-4817-8a6f-e315e2408b0a", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "line-bot-knowledge-files" }],
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "line-bot-knowledge-bge-m3-1024-cosine" }],
+  "ai": { "binding": "AI" },
   "triggers": { "crons": ["17 19 * * *"] },
   "queues": {
-    "producers": [{ "binding": "MESSAGE_QUEUE", "queue": "line-question-jobs" }],
+    "producers": [
+      { "binding": "MESSAGE_QUEUE", "queue": "line-question-jobs" },
+      { "binding": "INGESTION_QUEUE", "queue": "knowledge-ingestion-jobs" }
+    ],
     "consumers": [{
       "queue": "line-question-jobs",
       "max_batch_size": 5,
       "max_batch_timeout": 2,
       "max_retries": 2,
       "dead_letter_queue": "line-question-jobs-dlq"
+    }, {
+      "queue": "knowledge-ingestion-jobs",
+      "max_batch_size": 1,
+      "max_retries": 3,
+      "dead_letter_queue": "knowledge-ingestion-dlq"
     }]
   }
 }

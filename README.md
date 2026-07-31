@@ -12,6 +12,7 @@ replies once through LINE, and retains pseudonymized diagnostics in D1 for
 - A LINE Official Account and Messaging API channel.
 - The [LINE console runbook](docs/setup/line-messaging-api.md) completed before
   production smoke testing.
+- For knowledge-search operations, use [the knowledge-search runbook](docs/setup/knowledge-search.md) and the dedicated scripts below.
 
 Run the local verification gate from the repository root:
 
@@ -23,7 +24,8 @@ npm.cmd run typecheck
 npm.cmd run deploy -- --dry-run
 ```
 
-The dry-run must list the `MESSAGE_QUEUE`, `DB`, and `AI` bindings without
+The dry-run must list the `MESSAGE_QUEUE`, `INGESTION_QUEUE`, `DB`, `R2`,
+`Vectorize`, and `AI` bindings without
 deploying.
 
 ## Client PowerPoint
@@ -66,6 +68,12 @@ The OOXML fallback checks are not a visual playback review; before technical
 delivery, open the deck in PowerPoint/LibreOffice and inspect every slide for
 換行、重疊與字級。
 
+Knowledge-search checks:
+
+```powershell
+npm run test:e2e:knowledge
+npm run test:quality:knowledge
+```
 ## Provision Cloudflare
 
 1. Authenticate:
@@ -286,6 +294,10 @@ npm.cmd run deploy
 ```
 
 Production smoke and Version ID recording are still required afterward.
+
+For knowledge-search provisioning, smoke tests, DLQ handling, rollback, and monitoring commands, see [docs/setup/knowledge-search.md](docs/setup/knowledge-search.md).
+
+Record the deployment ID printed by Wrangler. With real credentials only, perform this production smoke test:
 
 ## Production smoke check
 

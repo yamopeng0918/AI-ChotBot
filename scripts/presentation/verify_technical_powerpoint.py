@@ -27,6 +27,13 @@ TEAL = "21D4B4"
 FONT_NAME = "Microsoft JhengHei"
 FOOTER_SAFE_TOP = Inches(7.0)
 DECORATIVE_PREFIXES = ("accent-", "footer-", "page-number-", "section-")
+TECH_CARD_PREFIXES = (
+    "architecture-node-", "message-flow-step-", "worker-flow-node-",
+    "reliability-node-", "model-boundary-", "weather-cache-step-",
+    "data-node-", "privacy-layer-", "observability-event-",
+    "quality-gate-", "knowledge-node-", "development-status-",
+    "maturity-matrix-",
+)
 
 
 def _iter_shapes(shapes):
@@ -75,6 +82,29 @@ def _has_primary_style(shape) -> bool:
     return True
 
 
+def _has_minimum_font_size(shape, minimum_points: float) -> bool:
+    if not _native_text(shape):
+        return False
+    runs = [run for paragraph in shape.text_frame.paragraphs for run in paragraph.runs if run.text]
+    return bool(runs) and all(run.font.size is not None and run.font.size.pt >= minimum_points for run in runs)
+
+
+def _display_text(text: str) -> str:
+    return re.sub(r"(\*\*|__|`)", "", text).strip()
+
+
+def _text_density(shape) -> float:
+    area = shape.width.inches * shape.height.inches
+    return len(shape.text.replace("\n", "")) / area if area else float("inf")
+
+
+def _require_readable_card(shape, name: str, errors: list[str], *, minimum_height: float) -> None:
+    if shape.height.inches < minimum_height:
+        errors.append(f"{name} needs at least {minimum_height:.2f} inches of internal height")
+    if _text_density(shape) > 25:
+        errors.append(f"{name} exceeds the 25 chars/in² density limit")
+
+
 def _has_triangle_tail(shape) -> bool:
     if shape.shape_type != MSO_SHAPE_TYPE.LINE:
         return False
@@ -88,6 +118,7 @@ def _named(slide, prefix: str) -> list:
 
 
 def _require_exact_text(slide, name: str, expected: str, errors: list[str], slide_number: int, label: str) -> None:
+    expected = _display_text(expected)
     shapes = _named(slide, name)
     exact = [shape for shape in shapes if shape.name == name]
     if len(shapes) != 1 or len(exact) != 1:
@@ -98,6 +129,8 @@ def _require_exact_text(slide, name: str, expected: str, errors: list[str], slid
         errors.append(f"Slide {slide_number} {label} must match the source")
     elif name.startswith(("title-", "conclusion-", "bullet-", "roadmap-step-")) and not _has_primary_style(exact[0]):
         errors.append(f"Slide {slide_number} {name} must use {FONT_NAME}, {WHITE}, and at least 16pt")
+    elif name.startswith(("conclusion-", "bullet-", "roadmap-step-")):
+        _require_readable_card(exact[0], name, errors, minimum_height=0.55)
 
 
 def _require_named_terms(slide, prefix: str, terms: tuple[str, ...], errors: list[str], slide_number: int, expected_count: int | None = None) -> None:
@@ -202,6 +235,11 @@ def verify_technical_presentation(pptx_path: Path, source_path: Path) -> list[st
                 errors.append(f"Slide {index} shape {shape.name} is outside the slide bounds")
             elif shape.top + shape.height > FOOTER_SAFE_TOP:
                 errors.append(f"Slide {index} shape {shape.name} overlaps the footer-safe area")
+            if shape.name.startswith(TECH_CARD_PREFIXES):
+                if not _has_minimum_font_size(shape, 12):
+                    errors.append(f"Slide {index} {shape.name} must declare at least 12pt text")
+                else:
+                    _require_readable_card(shape, shape.name, errors, minimum_height=0.45)
 
     for source in source_slides:
         slide = presentation.slides[source.number - 1]

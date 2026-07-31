@@ -30,6 +30,10 @@ def _roadmap_label(bullet: str) -> str:
     return f"{number}. {body.split('：', 1)[0]}"
 
 
+def _display_text(text: str) -> str:
+    return text.replace("**", "").replace("__", "").replace("`", "")
+
+
 def _triangle_tail(connector) -> None:
     connector.line.width = Pt(1)
     tail = OxmlElement("a:tailEnd")
@@ -50,7 +54,7 @@ class TechnicalSourceTests(unittest.TestCase):
 
 class TechnicalVerifierContractTests(unittest.TestCase):
     def _add_text(self, shapes, name: str, text: str) -> None:
-        shape = shapes.add_textbox(Inches(0.4), Inches(0.4), Inches(8), Inches(0.35))
+        shape = shapes.add_textbox(Inches(0.4), Inches(0.4), Inches(10), Inches(0.65))
         shape.name = name
         shape.text = text
         if text:
@@ -69,6 +73,7 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         rename_special: tuple[int, str, str] | None = None,
         message_connector_replacement: str | None = None,
         duplicate_message_connector: bool = False,
+        narrow_bullet: bool = False,
     ) -> None:
         presentation = Presentation()
         presentation.slides._sldIdLst.clear()
@@ -86,9 +91,9 @@ class TechnicalVerifierContractTests(unittest.TestCase):
             accent.fill.fore_color.rgb = RGBColor.from_string("21D4B4")
             accent.line.fill.background()
             self._add_text(slide.shapes, f"title-{source.number}", title_override if source.number == 1 and title_override is not None else source.title)
-            self._add_text(slide.shapes, f"conclusion-{source.number}", conclusion_override if source.number == 1 and conclusion_override is not None else source.bullets[0])
+            self._add_text(slide.shapes, f"conclusion-{source.number}", conclusion_override if source.number == 1 and conclusion_override is not None else _display_text(source.bullets[0]))
             for index, bullet in enumerate(source.bullets, start=1):
-                text = bullet_override if source.number == 1 and index == 1 and bullet_override is not None else bullet
+                text = bullet_override if source.number == 1 and index == 1 and bullet_override is not None else _display_text(bullet)
                 self._add_text(slide.shapes, f"bullet-{source.number}-{index}", text)
             self._add_text(slide.shapes, f"footer-{source.number}", "footer")
             self._add_text(slide.shapes, f"page-number-{source.number}", str(source.number))
@@ -167,6 +172,13 @@ class TechnicalVerifierContractTests(unittest.TestCase):
             special(10, f"privacy-layer-{name}", text)
         if duplicate_name:
             self._add_text(presentation.slides[0].shapes, duplicate_name, "重複名稱")
+        if narrow_bullet:
+            narrow = next(
+                shape
+                for shape in presentation.slides[0].shapes
+                if shape.name == "bullet-1-1"
+            )
+            narrow.width = Inches(0.25)
         if sensitive_location == "top":
             self._add_text(presentation.slides[0].shapes, "sensitive-top", "access_token")
         elif sensitive_location == "group":
@@ -269,6 +281,9 @@ class TechnicalVerifierContractTests(unittest.TestCase):
     def test_rejects_message_flow_connector_copy_suffix(self) -> None:
         self.assertIn("message-flow-connector-1", self._errors(duplicate_message_connector=True))
 
+    def test_rejects_a_narrow_long_source_bullet_card(self) -> None:
+        self.assertIn("density", self._errors(narrow_bullet=True))
+
 
 class GeneratedTechnicalPowerPointTests(unittest.TestCase):
     def test_generated_deck_satisfies_the_complete_technical_contract(self) -> None:
@@ -326,6 +341,30 @@ class GeneratedTechnicalPowerPointTests(unittest.TestCase):
             self.assertTrue(set(names).issubset(actual_names))
         source = parse_markdown(SOURCE_PATH)
         self.assertEqual(tuple(_roadmap_label(bullet) for bullet in source[15].bullets), tuple(next(shape.text for shape in deck.slides[15].shapes if shape.name == f"roadmap-step-{index}") for index in range(1, 6)))
+
+    def test_generated_special_bullet_cards_are_readable_and_strip_inline_markdown(self) -> None:
+        with TemporaryDirectory() as directory:
+            output_path = Path(directory) / "technical.pptx"
+            build_technical_presentation(SOURCE_PATH, output_path)
+            deck = Presentation(output_path)
+
+        for slide_number in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16):
+            bullets = [
+                shape
+                for shape in deck.slides[slide_number - 1].shapes
+                if shape.name.startswith(f"bullet-{slide_number}-")
+            ]
+            self.assertLessEqual(len({shape.left for shape in bullets}), 2)
+            self.assertTrue(all(shape.width.inches >= 5.8 for shape in bullets))
+            self.assertTrue(all(shape.height.inches >= 0.65 for shape in bullets))
+            self.assertTrue(all(shape.top.inches + shape.height.inches <= 7.0 for shape in bullets))
+            self.assertTrue(all(len(shape.text) / (shape.width.inches * shape.height.inches) <= 25 for shape in bullets))
+        development_bullet = next(
+            shape.text
+            for shape in deck.slides[12].shapes
+            if shape.name == "bullet-13-1"
+        )
+        self.assertNotIn("**", development_bullet)
 
 
 if __name__ == "__main__":

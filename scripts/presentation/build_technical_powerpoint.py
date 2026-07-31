@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -33,6 +34,11 @@ BLUE = "4BA3FF"
 AMBER = "FFBE55"
 CORAL = "FF6B6B"
 FONT_NAME = "Microsoft JhengHei"
+
+
+def _display_text(text: str) -> str:
+    """Render the limited inline Markdown used in source bullets as plain text."""
+    return re.sub(r"(\*\*|__|`)", "", text).strip()
 
 
 def _rgb(value: str) -> RGBColor:
@@ -112,7 +118,7 @@ def _base_slide(presentation: Presentation, source) -> object:
     accent.line.fill.background()
     _text(slide, f"section-{source.number}", "AI-CHOTBOT · TECHNICAL ACHIEVEMENTS", 0.7, 0.24, 5.0, 0.22, size=8.5, color=TEAL, bold=True)
     _text(slide, f"title-{source.number}", source.title, 0.7, 0.52, 12.0, 0.5, size=25, bold=True)
-    _card(slide, f"conclusion-{source.number}", source.bullets[0], 0.7, 1.16, 11.95, 0.58, line=TEAL, size=16, bold=True)
+    _card(slide, f"conclusion-{source.number}", _display_text(source.bullets[0]), 0.7, 1.16, 11.95, 0.58, line=TEAL, size=16, bold=True)
     _text(slide, f"footer-{source.number}", "16 頁技術成果與工程治理簡報", 0.7, 7.08, 5.0, 0.18, size=8, color=MUTED)
     _text(slide, f"page-number-{source.number}", f"{source.number:02d} / 16", 11.7, 7.04, 0.8, 0.2, size=8.5, color=MUTED, bold=True, align=PP_ALIGN.RIGHT)
     slide.notes_slide.notes_text_frame.text = source.speaker_notes
@@ -120,19 +126,19 @@ def _base_slide(presentation: Presentation, source) -> object:
 
 
 def _source_bullets(slide, source, *, top: float = 2.05, compact: bool = False) -> None:
-    columns = 3 if compact else 2
+    columns = 2
     rows = (len(source.bullets) + columns - 1) // columns
-    width = 3.82 if compact else 5.82
-    height = 0.56 if compact else (4.55 - 0.16 * (rows - 1)) / rows
+    width = 5.82
+    height = 0.66 if compact else (4.55 - 0.16 * (rows - 1)) / rows
     for index, bullet in enumerate(source.bullets, start=1):
         column = (index - 1) % columns
         row = (index - 1) // columns
         _card(
             slide,
             f"bullet-{source.number}-{index}",
-            bullet,
-            0.7 + column * (4.02 if compact else 6.12),
-            top + row * (height + (0.12 if compact else 0.16)),
+            _display_text(bullet),
+            0.7 + column * 6.12,
+            top + row * (height + (0.08 if compact else 0.16)),
             width,
             height,
             line=BLUE if index % 2 == 0 else TEAL,
@@ -253,7 +259,7 @@ def build_technical_presentation(source_path: Path, output_path: Path) -> None:
     special_numbers = {3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16}
     for source in source_slides:
         slide = _base_slide(presentation, source)
-        _source_bullets(slide, source, top=5.55 if source.number in special_numbers else 2.05, compact=source.number in special_numbers)
+        _source_bullets(slide, source, top=4.65 if source.number in special_numbers else 2.05, compact=source.number in special_numbers)
         if source.number == 3:
             _architecture(slide)
         elif source.number == 4:

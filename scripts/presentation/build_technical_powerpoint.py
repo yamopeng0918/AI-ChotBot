@@ -147,11 +147,11 @@ def _source_bullets(slide, source, *, top: float = 2.05, compact: bool = False) 
 
 
 def _architecture(slide) -> None:
-    labels = ("LINE", "Webhook", "Worker", "Queue", "Workers AI", "D1", "Open-Meteo")
+    labels = ("使用者", "LINE", "Worker", "Queue", "AI", "D1", "Open-Meteo")
     for index, label in enumerate(labels, start=1):
         column = (index - 1) % 4
         row = (index - 1) // 4
-        _card(slide, f"architecture-node-{index}", f"架構節點 {index}\n{label}", 0.75 + column * 3.1, 2.15 + row * 1.05, 2.45, 0.64, line=TEAL if row == 0 else BLUE, size=13, bold=True, align=PP_ALIGN.CENTER)
+        _card(slide, f"architecture-node-{index}", label, 0.75 + column * 3.1, 2.15 + row * 1.05, 2.45, 0.64, line=TEAL if row == 0 else BLUE, size=16, bold=True, align=PP_ALIGN.CENTER)
     points = ((3.2, 2.47, 3.85, 2.47), (6.3, 2.47, 6.95, 2.47), (9.4, 2.47, 10.05, 2.47), (4.0, 2.82, 2.2, 3.2), (7.0, 2.82, 5.3, 3.2), (10.0, 2.82, 8.4, 3.2))
     for index, point in enumerate(points, start=1):
         _connector(slide, f"architecture-connector-{index}", *point)
@@ -229,8 +229,10 @@ def _quality_gates(slide) -> None:
 def _knowledge_architecture(slide) -> None:
     names = ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer")
     for index, name in enumerate(names):
-        _card(slide, f"knowledge-node-{name}", name, 0.85 + (index % 3) * 4.05, 2.0 + (index // 3) * 0.88, 3.1, 0.54, line=BLUE, size=13, bold=True, align=PP_ALIGN.CENTER)
-    _card(slide, "development-status-13", "開發中", 10.5, 3.1, 1.6, 0.46, line=AMBER, fill=AMBER, size=13, bold=True, align=PP_ALIGN.CENTER)
+        _card(slide, f"knowledge-node-{name}", name, 0.45 + index * 2.1, 2.0, 1.85, 0.58, line=BLUE, size=12, bold=True, align=PP_ALIGN.CENTER)
+        if index:
+            _connector(slide, f"knowledge-connector-{index}", 0.45 + (index - 1) * 2.1 + 1.85, 2.29, 0.45 + index * 2.1, 2.29, color=BLUE)
+    _card(slide, "development-status-13", "開發中", 5.85, 3.05, 1.6, 0.46, line=AMBER, fill=AMBER, size=13, bold=True, align=PP_ALIGN.CENTER)
 
 
 def _maturity_matrix(slide) -> None:

@@ -204,6 +204,15 @@ def _require_arrow_connectors(slide, prefix: str, expected_count: int, errors: l
         errors.append(f"Slide {slide_number} requires {expected_count} {prefix} connectors with triangle arrows")
 
 
+def _require_left_to_right_connector(slide, name: str, errors: list[str], slide_number: int) -> None:
+    shapes = _named(slide, name)
+    exact = [shape for shape in shapes if shape.name == name]
+    if len(shapes) != 1 or len(exact) != 1:
+        errors.append(f"Slide {slide_number} requires {name} exactly once")
+    elif not _has_triangle_tail(exact[0]) or exact[0].begin_x >= exact[0].end_x:
+        errors.append(f"Slide {slide_number} {name} must be a left-to-right triangle-arrow connector")
+
+
 def _roadmap_label(bullet: str) -> str:
     number, body = bullet.split(". ", 1)
     return f"{number}. {body.split('：', 1)[0]}"
@@ -299,7 +308,14 @@ def verify_technical_presentation(pptx_path: Path, source_path: Path) -> list[st
     if len(source_slides) != 16:
         return errors
     slide = presentation.slides[2]
-    _require_named_terms(slide, "architecture-node-", ("架構節點",), errors, 3, 7)
+    architecture_roles = ("使用者", "LINE", "Worker", "Queue", "AI", "D1", "Open-Meteo")
+    for index, role in enumerate(architecture_roles, start=1):
+        name = f"architecture-node-{index}"
+        _require_exact_text(slide, name, role, errors, 3, "architecture-node")
+        shapes = _named(slide, name)
+        exact = [shape for shape in shapes if shape.name == name]
+        if len(exact) == 1 and not _has_minimum_font_size(exact[0], 16):
+            errors.append(f"Slide 3 {name} must declare at least 16pt text")
     connectors = _named(slide, "architecture-connector-")
     if len(connectors) < 6 or any(shape.shape_type != MSO_SHAPE_TYPE.LINE for shape in connectors):
         errors.append("Slide 3 needs at least six native architecture connectors")
@@ -334,8 +350,18 @@ def verify_technical_presentation(pptx_path: Path, source_path: Path) -> list[st
     for pattern, label in ((r"主線\s*134\s*通過", "主線 134 通過"), (r"知識搜尋\s*421\s*通過", "知識搜尋 421 通過"), (r"1 項.*超過\s*5 秒", "1 項超過 5 秒"), (r"設定檢查待更新", "設定檢查待更新")):
         if not re.search(pattern, quality):
             errors.append(f"Slide 12 needs quality-gate evidence: {label}")
-    for name in ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer"):
+    knowledge_names = ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer")
+    knowledge_lefts: list[int] = []
+    for name in knowledge_names:
         _require_named_keyword(presentation.slides[12], f"knowledge-node-{name}", name, errors, 13)
+        shapes = _named(presentation.slides[12], f"knowledge-node-{name}")
+        exact = [shape for shape in shapes if shape.name == f"knowledge-node-{name}"]
+        if len(exact) == 1:
+            knowledge_lefts.append(exact[0].left)
+    if knowledge_lefts != sorted(knowledge_lefts):
+        errors.append("Slide 13 knowledge-node order must be R2 → ingestion queue → Workers AI → Vectorize → retrieval → grounded answer")
+    for index in range(1, 6):
+        _require_left_to_right_connector(presentation.slides[12], f"knowledge-connector-{index}", errors, 13)
     _require_exact_text(presentation.slides[12], "development-status-13", "開發中", errors, 13, "development-status")
     _require_named_keyword(presentation.slides[13], "maturity-matrix-14", "已完成", errors, 14)
     maturity_text = "\n".join(

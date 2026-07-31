@@ -75,6 +75,9 @@ class TechnicalVerifierContractTests(unittest.TestCase):
         message_connector_replacement: str | None = None,
         duplicate_message_connector: bool = False,
         narrow_bullet: bool = False,
+        architecture_role_override: str | None = None,
+        undersized_shape: str | None = None,
+        missing_knowledge_connector: int | None = None,
     ) -> None:
         presentation = Presentation()
         presentation.slides._sldIdLst.clear()
@@ -106,8 +109,8 @@ class TechnicalVerifierContractTests(unittest.TestCase):
             output_name = rename_special[2] if rename_special and rename_special[:2] == (slide_number, name) else name
             self._add_text(presentation.slides[slide_number - 1].shapes, output_name, "" if empty_special == (slide_number, name) else text)
 
-        for index in range(7):
-            special(3, f"architecture-node-{index + 1}", f"架構節點 {index + 1}")
+        for index, role in enumerate(("使用者", "LINE", "Worker", "Queue", "AI", "D1", "Open-Meteo"), start=1):
+            special(3, f"architecture-node-{index}", architecture_role_override if index == 1 and architecture_role_override is not None else role)
         for index in range(6):
             connector = presentation.slides[2].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(1), Inches(1), Inches(2), Inches(1))
             connector.name = f"architecture-connector-{index + 1}"
@@ -153,6 +156,12 @@ class TechnicalVerifierContractTests(unittest.TestCase):
             special(12, f"quality-gate-{name}", quality_override if name == "main" and quality_override is not None else text)
         for name in ("r2", "ingestion-queue", "workers-ai", "vectorize", "retrieval", "grounded-answer"):
             special(13, f"knowledge-node-{name}", name)
+        for index in range(1, 6):
+            if missing_knowledge_connector == index:
+                continue
+            connector = presentation.slides[12].shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(index), Inches(1), Inches(index + 1), Inches(1))
+            connector.name = f"knowledge-connector-{index}"
+            _triangle_tail(connector)
         special(13, "development-status-13", "開發中")
         special(14, "maturity-matrix-14", maturity_override or "已完成｜開發中｜待合併前驗證｜待正式環境驗證")
         for index in range(1, 6):
@@ -180,6 +189,14 @@ class TechnicalVerifierContractTests(unittest.TestCase):
                 if shape.name == "bullet-1-1"
             )
             narrow.width = Inches(0.25)
+        if undersized_shape:
+            shape = next(
+                shape
+                for slide in presentation.slides
+                for shape in slide.shapes
+                if shape.name == undersized_shape
+            )
+            shape.text_frame.paragraphs[0].runs[0].font.size = Pt(15)
         if sensitive_location == "top":
             self._add_text(presentation.slides[0].shapes, "sensitive-top", "access_token")
         elif sensitive_location == "group":
@@ -284,6 +301,15 @@ class TechnicalVerifierContractTests(unittest.TestCase):
 
     def test_rejects_a_narrow_long_source_bullet_card(self) -> None:
         self.assertIn("density", self._errors(narrow_bullet=True))
+
+    def test_rejects_an_architecture_role_replaced_with_webhook(self) -> None:
+        self.assertIn("architecture-node", self._errors(architecture_role_override="Webhook"))
+
+    def test_rejects_an_architecture_node_below_sixteen_points(self) -> None:
+        self.assertIn("16pt", self._errors(undersized_shape="architecture-node-1"))
+
+    def test_rejects_a_missing_knowledge_chain_connector(self) -> None:
+        self.assertIn("knowledge-connector-3", self._errors(missing_knowledge_connector=3))
 
     def test_rejects_picture_anywhere_in_the_deck(self) -> None:
         self.assertIn(
@@ -404,6 +430,37 @@ class GeneratedTechnicalPowerPointTests(unittest.TestCase):
             if shape.name == "bullet-13-1"
         )
         self.assertNotIn("**", development_bullet)
+
+    def test_generated_architecture_roles_and_knowledge_chain_are_exact(self) -> None:
+        with TemporaryDirectory() as directory:
+            output_path = Path(directory) / "technical.pptx"
+            build_technical_presentation(SOURCE_PATH, output_path)
+            deck = Presentation(output_path)
+
+        architecture = deck.slides[2]
+        expected_roles = ("使用者", "LINE", "Worker", "Queue", "AI", "D1", "Open-Meteo")
+        self.assertEqual(
+            expected_roles,
+            tuple(
+                next(
+                    shape.text
+                    for shape in architecture.shapes
+                    if shape.name == f"architecture-node-{index}"
+                )
+                for index in range(1, 8)
+            ),
+        )
+        for index in range(1, 8):
+            shape = next(shape for shape in architecture.shapes if shape.name == f"architecture-node-{index}")
+            self.assertGreaterEqual(shape.text_frame.paragraphs[0].runs[0].font.size.pt, 16)
+        knowledge = deck.slides[12]
+        for index in range(1, 6):
+            connector = next(shape for shape in knowledge.shapes if shape.name == f"knowledge-connector-{index}")
+            self.assertEqual(MSO_SHAPE_TYPE.LINE, connector.shape_type)
+            self.assertLess(connector.begin_x, connector.end_x)
+            tail = connector._element.spPr.ln.find(qn("a:tailEnd"))
+            self.assertIsNotNone(tail)
+            self.assertEqual("triangle", tail.get("type"))
 
 
 if __name__ == "__main__":

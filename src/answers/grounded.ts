@@ -1,41 +1,12 @@
 import type { KnowledgeEvidence } from "../knowledge/types";
+import type { GroundedGenerator, GroundedMessage } from "./grounded-generators";
 
 export const INSUFFICIENT_EVIDENCE_TEXT = "I don't have enough reliable evidence to answer that.";
 export type GroundedAnswer = { text: string; citations: string[]; model: string | null; usedEvidenceIds: string[] };
 export type GroundedAnswerRequest = { question: string; evidence: KnowledgeEvidence[]; webUnavailable: boolean };
-type Message = { role: "system" | "user"; content: string };
-type Generator = (messages: Message[]) => Promise<{ text: string; model: string }>;
 export type EntailmentChecker = (claim: string, citedEvidenceText: string) => Promise<boolean>;
 type Claim = { text: string; evidenceIds: string[] };
 type Parsed = { answer: string; claims: Claim[] };
-type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-export class OpenRouterGroundedGenerator {
-  constructor(private readonly fetcher: Fetcher, private readonly apiKey: string, private readonly model: string) {}
-  async generate(messages: Message[]): Promise<{ text: string; model: string }> {
-    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 20_000);
-    try {
-      const response = await this.fetcher.call(globalThis, "https://openrouter.ai/api/v1/chat/completions", { method: "POST",
-        headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: this.model, messages, response_format: { type: "json_object" }, temperature: 0, max_tokens: 900 }), signal: controller.signal });
-      const raw = await response.text();
-      if (!response.ok) {
-        console.info("openrouter:grounded-response", response.status);
-        throw new Error("grounded model unavailable");
-      }
-      const payload: unknown = JSON.parse(raw);
-      if (!record(payload)) throw new Error("malformed grounded response");
-      const choices = (payload as { choices?: unknown }).choices;
-      const first = Array.isArray(choices) && record(choices[0]) ? choices[0] : null;
-      const message = first && record(first.message) ? first.message : null;
-      if (!message || typeof message.content !== "string" || !message.content.trim()) {
-        console.info("openrouter:grounded-empty");
-        throw new Error("malformed grounded response");
-      }
-      return { text: message.content, model: typeof payload.model === "string" && payload.model ? payload.model : this.model };
-    } finally { clearTimeout(timeout); }
-  }
-}
 
 export async function strictEntailment(claim: string, evidence: string): Promise<boolean> {
   const expected = semanticText(claim);
@@ -43,14 +14,17 @@ export async function strictEntailment(claim: string, evidence: string): Promise
 }
 
 export class GroundedAnswerService {
-  constructor(private readonly generate: Generator, private readonly entails: EntailmentChecker = strictEntailment) {}
+  constructor(
+    private readonly generator: GroundedGenerator,
+    private readonly entails: EntailmentChecker = strictEntailment,
+  ) {}
 
   async answer(request: GroundedAnswerRequest): Promise<GroundedAnswer> {
     if (!request.evidence.length) return fallback(null);
-    const messages: Message[] = [{ role: "system", content: prompt(request) }, { role: "user", content: request.question }];
+    const messages: GroundedMessage[] = [{ role: "system", content: prompt(request) }, { role: "user", content: request.question }];
     let lastModel: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const generated = await this.generate(messages); lastModel = generated.model;
+      const generated = await this.generator.generate(messages); lastModel = generated.model;
       const parsed = parse(generated.text);
       if (parsed && await validate(parsed, request.evidence, this.entails)) return render(parsed, request.evidence, generated.model);
       if (attempt === 0) messages.push({ role: "user", content: "Your output was invalid or unsupported. Return corrected strict JSON using only evidence IDs and fully cited, entailed factual claims." });

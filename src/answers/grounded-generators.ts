@@ -9,6 +9,8 @@ export class GroundedProviderError extends Error {
   constructor(
     readonly reason: GroundedProviderFailureReason,
     readonly status?: number,
+    readonly errorName?: "InferenceUpstreamError" | "AiInternalError",
+    readonly code?: number,
   ) {
     super(reason);
     this.name = "GroundedProviderError";
@@ -24,6 +26,8 @@ export type GroundedProviderEvent = {
   durationMs?: number;
   reason?: GroundedProviderFailureReason;
   status?: number;
+  errorName?: "InferenceUpstreamError" | "AiInternalError";
+  code?: number;
 };
 
 export type GroundedGeneratorEntry = {
@@ -116,16 +120,41 @@ export class WorkersAiGroundedGenerator implements GroundedGenerator {
   ) {}
 
   async generate(messages: GroundedMessage[]): Promise<GroundedGeneration> {
-    const payload: unknown = await this.ai.run(this.model, {
-      messages,
-      temperature: 0,
-      max_tokens: 900,
-      response_format: GROUNDED_RESPONSE_FORMAT,
-    });
+    let payload: unknown;
+    try {
+      payload = await this.ai.run(this.model, {
+        messages,
+        temperature: 0,
+        max_tokens: 900,
+        response_format: GROUNDED_RESPONSE_FORMAT,
+      });
+    } catch (error) {
+      const metadata = workersAiErrorMetadata(error);
+      throw new GroundedProviderError("network", metadata.status, metadata.errorName, metadata.code);
+    }
     const text = workersAiResponseText(payload);
     if (!text) throw new GroundedProviderError("malformed");
     return { text, model: this.model };
   }
+}
+
+function workersAiErrorMetadata(error: unknown): {
+  errorName?: "InferenceUpstreamError" | "AiInternalError";
+  code?: number;
+  status?: number;
+} {
+  if (error === null || typeof error !== "object") return {};
+
+  const name = Reflect.get(error, "name");
+  const code = Reflect.get(error, "code");
+  const status = Reflect.get(error, "status");
+  return {
+    ...(name === "InferenceUpstreamError" || name === "AiInternalError" ? { errorName: name } : {}),
+    ...(typeof code === "number" && Number.isFinite(code) ? { code } : {}),
+    ...(typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
+      ? { status }
+      : {}),
+  };
 }
 
 function workersAiResponseText(payload: unknown): string {
@@ -184,7 +213,12 @@ export class FallbackGroundedGenerator implements GroundedGenerator {
       } catch (error) {
         terminal = error;
         const failure = error instanceof GroundedProviderError
-          ? { reason: error.reason, ...(error.status === undefined ? {} : { status: error.status }) }
+          ? {
+              reason: error.reason,
+              ...(error.status === undefined ? {} : { status: error.status }),
+              ...(error.errorName === undefined ? {} : { errorName: error.errorName }),
+              ...(error.code === undefined ? {} : { code: error.code }),
+            }
           : { reason: "network" as const };
         this.notify({
           type: "attempt.failed",

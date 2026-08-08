@@ -163,6 +163,65 @@ describe("FallbackGroundedGenerator", () => {
 });
 
 describe("WorkersAiGroundedGenerator", () => {
+  it("projects only allowlisted binding error metadata into provider telemetry", async () => {
+    const bindingError = Object.assign(new Error("secret-provider-message"), {
+      name: "InferenceUpstreamError",
+      code: 3040,
+      status: 400,
+      question: "secret-question",
+      providerPayload: "secret-payload",
+    });
+    bindingError.stack = "secret-provider-stack";
+    const ai = { run: vi.fn().mockRejectedValue(bindingError) };
+    const events: GroundedProviderEvent[] = [];
+    const chain = new FallbackGroundedGenerator([
+      {
+        provider: "workers_ai",
+        role: "terminal",
+        model: "@cf/meta/llama-3.1-8b-instruct-fast",
+        generator: new WorkersAiGroundedGenerator(ai),
+      },
+    ], (event) => events.push(event));
+
+    await expect(chain.generate([{ role: "user", content: "secret-question" }])).rejects.toThrow();
+    const failure = events.find((event) => event.type === "attempt.failed");
+    expect(failure).toMatchObject({
+      reason: "network",
+      errorName: "InferenceUpstreamError",
+      code: 3040,
+      status: 400,
+    });
+    expect(JSON.stringify(failure)).not.toMatch(/secret-provider-message|secret-provider-stack|secret-question|secret-payload/);
+  });
+
+  it("drops untrusted or malformed binding error metadata", async () => {
+    const ai = {
+      run: vi.fn().mockRejectedValue({
+        name: "SecretCustomError",
+        code: "3040",
+        status: 200,
+        message: "secret-provider-message",
+      }),
+    };
+    const events: GroundedProviderEvent[] = [];
+    const chain = new FallbackGroundedGenerator([
+      {
+        provider: "workers_ai",
+        role: "terminal",
+        model: "@cf/meta/llama-3.1-8b-instruct-fast",
+        generator: new WorkersAiGroundedGenerator(ai),
+      },
+    ], (event) => events.push(event));
+
+    await expect(chain.generate([{ role: "user", content: "q" }])).rejects.toThrow();
+    const failure = events.find((event) => event.type === "attempt.failed");
+    expect(failure).toMatchObject({ reason: "network" });
+    expect(failure).not.toHaveProperty("errorName");
+    expect(failure).not.toHaveProperty("code");
+    expect(failure).not.toHaveProperty("status");
+    expect(JSON.stringify(failure)).not.toContain("secret-provider-message");
+  });
+
   it("accepts a plain string response", async () => {
     const ai = { run: vi.fn().mockResolvedValue("  {\"answer\":\"A\",\"claims\":[]}  ") };
 

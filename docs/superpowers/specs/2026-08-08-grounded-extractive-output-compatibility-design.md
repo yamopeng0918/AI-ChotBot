@@ -36,3 +36,7 @@ Production metadata now isolates the terminal failure to the Workers AI binding,
 ## Approved opaque-error classification addendum
 
 Production proved that the Workers AI binding can reject with no usable name, numeric code, or HTTP status. Inspect either a primitive string rejection or an error object's message only transiently in memory and map exact, documented provider phrases into the closed categories `json_mode_unmet`, `capacity`, `account_limited`, `invalid_model`, `bad_input`, or `unknown`. Only the category may enter `GroundedProviderError` and `attempt.failed`; the original message and exception must never be retained or logged. Property access must remain fail-closed for throwing accessors and Proxies.
+
+## Approved controlled-probe addendum
+
+Stop expanding opaque-error inspection. Add an authenticated `POST /admin/diagnostics/workers-ai-probes` endpoint protected by the existing `ADMIN_API_TOKEN` bearer middleware. It accepts no request body and sequentially runs three fixed, content-free probes against `@cf/meta/llama-3.1-8b-instruct-fast`: plain text generation, a minimal JSON Schema, and the production grounded JSON Schema with fixed synthetic evidence. Return only each probe name, `success` or `failed`, and the existing closed diagnostic category on failure. Never return or log prompt text, model output, raw errors, messages, stack traces, tokens, secrets, or user/LINE data. The ordinary LINE, Queue, fallback, storage, and publication paths remain unchanged.

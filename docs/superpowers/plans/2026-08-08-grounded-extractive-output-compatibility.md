@@ -174,3 +174,34 @@ Accept a primitive string rejection directly; otherwise read `message` through t
 - [ ] **Step 4: Verify, review, commit, and deploy**
 
 Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent leakage review, commit `chore: classify opaque Workers AI failures`, deploy, and collect one new production diagnostic.
+
+### Task 6: Add an authenticated controlled Workers AI probe
+
+**Files:**
+- Create: `src/diagnostics/workers-ai-probes.ts`
+- Create: `src/diagnostics/provider-routes.ts`
+- Create: `test/diagnostics/workers-ai-probes.test.ts`
+- Create: `test/diagnostics/provider-routes.test.ts`
+- Modify: `src/answers/grounded-generators.ts`
+- Modify: `src/index.ts`
+
+**Interfaces:**
+- Consumes: `Ai.run`, `ADMIN_API_TOKEN`, the production Workers AI model and grounded response schema.
+- Produces: `runWorkersAiProbes(ai): Promise<{ probes: ProbeResult[] }>` and authenticated `POST /admin/diagnostics/workers-ai-probes`.
+
+- [ ] **Step 1: Write RED unit and route tests**
+
+Assert three sequential calls use fixed messages only: baseline without `response_format`, minimal JSON Schema, and the production grounded schema. Assert resolved calls return only `{ name, outcome: "success" }`; rejected calls return only `{ name, outcome: "failed", diagnosticCategory }`, with no raw prompt, output, message, error, stack, authorization, or token. Assert missing/wrong bearer tokens return the existing stable 401 without invoking AI, request bodies are ignored, and authenticated calls return the safe probe result.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/diagnostics/workers-ai-probes.test.ts test/diagnostics/provider-routes.test.ts`
+Expected: tests fail because the probe runner and route do not exist.
+
+- [ ] **Step 3: Implement the minimal probe boundary**
+
+Export the existing production grounded response format and closed Workers AI failure classifier. Implement three sequential fixed-input calls, discard every successful output immediately, and reduce every rejection immediately to the closed category. Register the POST route with `requireKnowledgeAdmin`; accept no request-derived probe input and return a stable internal error if the probe runner itself unexpectedly fails.
+
+- [ ] **Step 4: Verify, review, commit, deploy, and invoke once**
+
+Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent security review, commit `feat: add controlled Workers AI diagnostics`, deploy, invoke the endpoint once with the existing bearer token, record only the three safe results, then remove or disable the endpoint after root-cause analysis.

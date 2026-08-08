@@ -5,7 +5,12 @@ import { GroupAdminsRepository } from "./admin/group-admins";
 import { handleAdminCommand } from "./admin/handler";
 import { WorkersAiAnswerService } from "./answers/openrouter";
 import { GroundedAnswerService } from "./answers/grounded";
-import { OpenRouterGroundedGenerator } from "./answers/grounded-generators";
+import {
+  FallbackGroundedGenerator,
+  OpenRouterGroundedGenerator,
+  WorkersAiGroundedGenerator,
+  type GroundedGeneratorEntry,
+} from "./answers/grounded-generators";
 import type { Env } from "./config";
 import { processQuestion } from "./jobs/process-message";
 import type { QuestionJob } from "./jobs/types";
@@ -252,7 +257,30 @@ return {
     } : null;
     const knowledgeAnswering = injectedKnowledgeAnswering ?? (env.AI && env.VECTORIZE && env.TAVILY_API_KEY ? (() => {
       const retrievalRepository = new KnowledgeRepository(env.DB);
-      const groundedGenerator = new OpenRouterGroundedGenerator(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL);
+      const entries: GroundedGeneratorEntry[] = [{
+        provider: "openrouter",
+        role: "primary",
+        model: env.OPENROUTER_MODEL,
+        generator: new OpenRouterGroundedGenerator(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
+      }];
+      const fallbackModel = env.OPENROUTER_FALLBACK_MODEL?.trim();
+      if (fallbackModel && fallbackModel !== env.OPENROUTER_MODEL) {
+        entries.push({
+          provider: "openrouter",
+          role: "fallback",
+          model: fallbackModel,
+          generator: new OpenRouterGroundedGenerator(fetcher, env.OPENROUTER_API_KEY, fallbackModel),
+        });
+      }
+      entries.push({
+        provider: "workers_ai",
+        role: "terminal",
+        model: "@cf/meta/llama-3.2-3b-instruct",
+        generator: new WorkersAiGroundedGenerator(env.AI),
+      });
+      const groundedGenerator = new FallbackGroundedGenerator(entries, (event) => {
+        console.info("grounded:provider", event);
+      });
       return {
         retriever: new KnowledgeRetriever(new EmbeddingService(env.AI), new KnowledgeVectorStore(env.VECTORIZE), retrievalRepository, { now: () => (overrides.now?.() ?? new Date()).toISOString() }),
         webSearch: new TavilySearchService(fetcher, env.TAVILY_API_KEY, () => (overrides.now?.() ?? new Date()).toISOString()),

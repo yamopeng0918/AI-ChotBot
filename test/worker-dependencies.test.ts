@@ -123,6 +123,115 @@ describe("createWorker repository injection", () => {
   });
 });
 
+describe("grounded provider production wiring", () => {
+  async function runGroundedQuestion(fallbackModel?: string) {
+    const vectorId = "a".repeat(64);
+    const evidenceId = `chunk:${vectorId}`;
+    const repository = {
+      claim: vi.fn().mockResolvedValue({
+        state: "claimed",
+        leaseToken: "lease-grounded",
+        leaseUntil: "2026-07-18T00:01:00.000Z",
+        createdAt: job.receivedAt,
+        expiresAt: "2026-08-17T00:00:00.000Z",
+      }),
+      prepare: vi.fn().mockResolvedValue(undefined),
+      complete: vi.fn().mockResolvedValue(undefined),
+      release: vi.fn().mockResolvedValue(undefined),
+      purgeExpired: vi.fn(),
+    };
+    const openRouterBodies: Array<{ model: string }> = [];
+    const ai = {
+      run: vi.fn(async (model: string) => {
+        if (model === "@cf/baai/bge-m3") return { data: [Array(1024).fill(0)] };
+        return {
+          response: JSON.stringify({
+            answer: "The event is open.",
+            claims: [{ text: "The event is open.", evidenceIds: [evidenceId] }],
+          }),
+        };
+      }),
+    };
+    const db = {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({
+          all: vi.fn().mockResolvedValue({
+            results: [{
+              vectorId,
+              chunkId: "chunk",
+              documentId: "document",
+              text: "The event is open.",
+              displayName: "Guide",
+              sourceUrl: null,
+              pageNumber: 1,
+              sectionPath: null,
+              paragraphIndex: null,
+              segmentIndex: 0,
+            }],
+          }),
+          run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+        })),
+      })),
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("openrouter.ai")) {
+        openRouterBodies.push(JSON.parse(String(init?.body)) as { model: string });
+        return new Response(null, { status: 500 });
+      }
+      if (url.includes("api.line.me")) return new Response(null, { status: 200 });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    const env = {
+      ANALYTICS_HASH_KEY: "analytics-key-at-least-32-bytes",
+      LINE_CHANNEL_ACCESS_TOKEN: "line",
+      OPENROUTER_API_KEY: "key",
+      OPENROUTER_MODEL: "primary/model",
+      OPENROUTER_FALLBACK_MODEL: fallbackModel,
+      TAVILY_API_KEY: "tavily",
+      AI: ai as unknown as Ai,
+      VECTORIZE: {
+        query: vi.fn().mockResolvedValue({ matches: [{ id: vectorId, score: .9 }] }),
+      } as unknown as VectorizeIndex,
+      DB: db as unknown as D1Database,
+    } as Env;
+    const worker = createWorker({ questions: repository, fetcher });
+    const message = { body: job, ack: vi.fn(), retry: vi.fn() };
+
+    await worker.queue({ messages: [message] } as never, env, {} as ExecutionContext);
+
+    return { ai, openRouterBodies, repository };
+  }
+
+  it("uses Workers AI when both configured OpenRouter models fail", async () => {
+    const { ai, openRouterBodies, repository } = await runGroundedQuestion("fallback/model");
+
+    expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model", "fallback/model"]);
+    expect(ai.run).toHaveBeenCalledWith(
+      "@cf/meta/llama-3.2-3b-instruct",
+      expect.objectContaining({ messages: expect.any(Array) }),
+    );
+    expect(repository.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "answered", model: "@cf/meta/llama-3.2-3b-instruct" }),
+      "answered",
+      expect.any(String),
+    );
+  });
+
+  it.each([undefined, "", "   ", "primary/model"])(
+    "skips a missing, blank, or duplicate fallback model (%j)",
+    async (fallbackModel) => {
+      const { ai, openRouterBodies } = await runGroundedQuestion(fallbackModel);
+
+      expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model"]);
+      expect(ai.run).toHaveBeenCalledWith(
+        "@cf/meta/llama-3.2-3b-instruct",
+        expect.objectContaining({ messages: expect.any(Array) }),
+      );
+    },
+  );
+});
+
 describe("cron telemetry", () => {
   it("emits correlated cleanup started and completed events", async () => {
     const events: TelemetryEvent[] = [];

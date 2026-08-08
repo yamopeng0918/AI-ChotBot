@@ -25,3 +25,6 @@
 - 跑 grounded、process-message、logger、knowledge E2E、完整測試、typecheck、Wrangler dry-run。
 - 部署後重送同題，預期 LINE 回傳有 HTTPS Sources、D1 出現 pending draft；未經管理員核准前不入庫。
 
+## Approved structured-output fallback addendum
+
+Production metadata confirmed both attempts still failed with `parse_invalid`: OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free`, then Workers AI `@cf/meta/llama-3.2-3b-instruct`. The current Workers AI fallback is therefore replaced with the Cloudflare JSON Mode-supported `@cf/meta/llama-3.1-8b-instruct-fast` and receives a strict `response_format` JSON Schema for exactly `{ answer, claims[] }` and `{ text, evidenceIds[] }`. OpenRouter remains first priority. The existing parser and every evidence validation gate remain mandatory even when the provider reports schema compliance.

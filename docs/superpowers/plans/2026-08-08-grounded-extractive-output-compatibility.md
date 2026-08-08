@@ -92,3 +92,31 @@ After independent review, run `npx.cmd wrangler deploy`. Send the same ordinary 
 
 Commit: `chore: observe grounded validation outcomes safely`
 
+### Task 3: Use a JSON Mode-supported Workers AI fallback
+
+**Files:**
+- Modify: `src/answers/grounded-generators.ts`
+- Modify: `src/index.ts`
+- Modify: `test/answers/grounded-generators.test.ts`
+- Modify: `test/worker-dependencies.test.ts`
+
+**Interfaces:**
+- Consumes: `WorkersAiGroundedGenerator.generate(messages)`.
+- Produces: the unchanged `GroundedGeneration` API using model `@cf/meta/llama-3.1-8b-instruct-fast`.
+
+- [ ] **Step 1: Write RED tests**
+
+Assert the Workers AI binding receives `response_format: { type: "json_schema", json_schema: ... }`; the schema sets `additionalProperties: false`, requires `answer` and `claims`, requires each claim's `text` and non-empty unique `evidenceIds`, and the production fallback telemetry names the new model. Assert a structured object returned in `payload.response` is safely serialized to JSON text for the unchanged downstream parser, while string responses remain supported.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/answers/grounded-generators.test.ts test/worker-dependencies.test.ts`
+Expected: model/schema/object-response assertions fail against the 3B text-only request.
+
+- [ ] **Step 3: Implement minimal JSON Mode fallback**
+
+Change only the Workers AI grounded fallback constant/request. Pass the closed JSON Schema to `env.AI.run`. Accept only a string response or a plain object response that can be safely `JSON.stringify`-serialized; reject empty, array, or unrepresentable output as `malformed`. Keep OpenRouter priority and all downstream parsing/validation unchanged.
+
+- [ ] **Step 4: Verify and commit**
+
+Run focused tests, full tests, typecheck, and Wrangler dry-run. Commit `fix: use structured Workers AI grounded fallback`.

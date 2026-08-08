@@ -34,6 +34,8 @@ export type GroundedGeneratorEntry = {
 };
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type AiBinding = Pick<Ai, "run">;
+const WORKERS_AI_GROUNDED_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 export class OpenRouterGroundedGenerator implements GroundedGenerator {
   constructor(
@@ -74,6 +76,28 @@ export class OpenRouterGroundedGenerator implements GroundedGenerator {
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+export class WorkersAiGroundedGenerator implements GroundedGenerator {
+  constructor(
+    private readonly ai: AiBinding,
+    private readonly model = WORKERS_AI_GROUNDED_MODEL,
+  ) {}
+
+  async generate(messages: GroundedMessage[]): Promise<GroundedGeneration> {
+    const payload = await this.ai.run(this.model, { messages, temperature: 0, max_tokens: 900 }) as
+      | string
+      | { response?: unknown; choices?: Array<{ message?: { content?: unknown } }> };
+    const text = typeof payload === "string"
+      ? payload.trim()
+      : typeof payload.response === "string"
+        ? payload.response.trim()
+        : typeof payload.choices?.[0]?.message?.content === "string"
+          ? payload.choices[0].message.content.trim()
+          : "";
+    if (!text) throw new GroundedProviderError("malformed");
+    return { text, model: this.model };
   }
 }
 

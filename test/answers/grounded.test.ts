@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GroundedAnswerService, INSUFFICIENT_EVIDENCE_TEXT } from "../../src/answers/grounded";
-import { OpenRouterGroundedGenerator } from "../../src/answers/grounded-generators";
+import { OpenRouterGroundedGenerator, WorkersAiGroundedGenerator } from "../../src/answers/grounded-generators";
 import type { KnowledgeEvidence } from "../../src/knowledge/types";
 
 const file: KnowledgeEvidence = { id: "kb-1", sourceType: "knowledge", title: "Runner Guide", url: null, text: "Hydrate every 20 minutes.", pageNumber: 3, sectionPath: "Safety > Water", paragraphIndex: null, retrievedAt: "2026-07-22", score: .9 };
@@ -89,6 +89,20 @@ describe("GroundedAnswerService", () => {
     expect(result).toEqual({ text: valid, model: "actual/model" });
     expect(JSON.parse(fetcher.mock.calls[0]?.[1]?.body as string)).toMatchObject({ model: "configured/model", response_format: { type: "json_object" }, temperature: 0, messages: [{ role: "system", content: "rules" }] });
   });
+
+  it("fails closed when Workers AI returns a claim with a missing evidence ID", async () => {
+    const response = JSON.stringify({
+      answer: "Unsupported claim.",
+      claims: [{ text: "Unsupported claim.", evidenceIds: ["missing"] }],
+    });
+    const ai = { run: vi.fn().mockResolvedValue({ response }) };
+    const answer = await new GroundedAnswerService(new WorkersAiGroundedGenerator(ai))
+      .answer({ question: "q", evidence: [file], webUnavailable: false });
+
+    expect(ai.run).toHaveBeenCalledTimes(2);
+    expect(answer.text).toBe(INSUFFICIENT_EVIDENCE_TEXT);
+  });
+
   it("renders deterministic deduplicated LINE-safe citations and preserves exact evidence IDs/model", async () => {
     const generate = vi.fn().mockResolvedValue({ text: valid, model: "provider/model" });
     const entail = vi.fn().mockResolvedValue(true);

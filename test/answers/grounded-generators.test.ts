@@ -3,6 +3,7 @@ import {
   FallbackGroundedGenerator,
   type GroundedProviderEvent,
   OpenRouterGroundedGenerator,
+  WorkersAiGroundedGenerator,
 } from "../../src/answers/grounded-generators";
 
 describe("OpenRouterGroundedGenerator", () => {
@@ -50,6 +51,21 @@ describe("FallbackGroundedGenerator", () => {
     expect(events.map((event) => event.type)).toEqual([
       "attempt.started", "attempt.failed", "fallback.started", "attempt.started", "attempt.completed",
     ]);
+  });
+
+  it("uses Workers AI after both OpenRouter layers fail", async () => {
+    const ai = { run: vi.fn().mockResolvedValue({ response: "{\"answer\":\"A\",\"claims\":[]}" }) };
+    const chain = new FallbackGroundedGenerator([
+      { provider: "openrouter", role: "primary", model: "p", generator: { generate: vi.fn().mockRejectedValue(new Error("p")) } },
+      { provider: "openrouter", role: "fallback", model: "f", generator: { generate: vi.fn().mockRejectedValue(new Error("f")) } },
+      { provider: "workers_ai", role: "terminal", model: "@cf/meta/llama-3.2-3b-instruct", generator: new WorkersAiGroundedGenerator(ai) },
+    ]);
+
+    await expect(chain.generate([{ role: "system", content: "evidence" }]))
+      .resolves.toMatchObject({ model: "@cf/meta/llama-3.2-3b-instruct" });
+    expect(ai.run).toHaveBeenCalledWith("@cf/meta/llama-3.2-3b-instruct", expect.objectContaining({
+      messages: [{ role: "system", content: "evidence" }], temperature: 0, max_tokens: 900,
+    }));
   });
 
   it("does not call later generators after primary success", async () => {

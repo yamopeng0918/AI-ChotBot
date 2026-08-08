@@ -147,3 +147,30 @@ Catch only the Workers AI binding rejection. Normalize `error.name` to a closed 
 - [ ] **Step 4: Verify, commit, and deploy**
 
 Run focused tests, full tests, typecheck, and `npx.cmd wrangler deploy --dry-run`. Commit `chore: classify Workers AI binding failures safely`, deploy with `npx.cmd wrangler deploy`, then collect one production diagnostic attempt.
+
+### Task 5: Categorize opaque Workers AI error messages without logging them
+
+**Files:**
+- Modify: `src/answers/grounded-generators.ts`
+- Modify: `test/answers/grounded-generators.test.ts`
+
+**Interfaces:**
+- Consumes: an optional transient string from a rejected Workers AI exception's `message` property.
+- Produces: `diagnosticCategory: "json_mode_unmet" | "capacity" | "account_limited" | "invalid_model" | "bad_input" | "unknown"` on the existing sanitized failure event.
+
+- [ ] **Step 1: Write RED tests**
+
+Use table-driven tests for the documented phrases `JSON Mode couldn't be met`, `No more data centers to forward the request`, `used up your daily free allocation`, `No such model`, `model name is invalid`, `BadInput`, and `Request is missing`. Assert each maps to its closed category and serialized telemetry excludes the complete original message. Test arbitrary text and a throwing `message` getter map to `unknown` without leaking text.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/answers/grounded-generators.test.ts`
+Expected: category assertions fail because opaque binding errors currently expose only generic `network`.
+
+- [ ] **Step 3: Implement minimal closed classification**
+
+Read `message` through the existing fail-closed property accessor. Compare a lowercase in-memory value only against the documented phrases and immediately reduce it to the closed category. Carry only that category through `GroundedProviderError` and `attempt.failed`. Never store, spread, serialize, or log the message.
+
+- [ ] **Step 4: Verify, review, commit, and deploy**
+
+Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent leakage review, commit `chore: classify opaque Workers AI failures`, deploy, and collect one new production diagnostic.

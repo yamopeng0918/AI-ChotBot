@@ -32,3 +32,7 @@ Production metadata confirmed both attempts still failed with `parse_invalid`: O
 ## Approved provider-diagnostic addendum
 
 Production metadata now isolates the terminal failure to the Workers AI binding, but the fallback layer currently collapses every unknown binding exception to `network`. Add a closed, metadata-only diagnostic projection for Workers AI exceptions. It may expose only a normalized error name, a finite numeric provider code, and a valid HTTP status; it must never expose the exception message, stack, prompt, question, answer, evidence, URL, provider payload, LINE identifiers, tokens, authorization values, or secrets. Diagnostic projection must not alter fallback order, response behavior, validation, storage, or publication.
+
+## Approved opaque-error classification addendum
+
+Production proved that the Workers AI binding can reject with no usable name, numeric code, or HTTP status. Inspect an error message only transiently in memory and map exact, documented provider phrases into the closed categories `json_mode_unmet`, `capacity`, `account_limited`, `invalid_model`, `bad_input`, or `unknown`. Only the category may enter `GroundedProviderError` and `attempt.failed`; the original message and exception must never be retained or logged. Property access must remain fail-closed for throwing accessors and Proxies.

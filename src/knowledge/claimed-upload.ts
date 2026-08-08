@@ -39,6 +39,14 @@ export async function finalizeClaimedUpload(
   input: ClaimedUploadInput,
   dependencies: ClaimedUploadDependencies,
 ): Promise<{ documentId: string; status: "pending" }> {
+  const { outcome: _outcome, ...result } = await finalizeClaimedUploadOutcome(input, dependencies);
+  return result;
+}
+
+export async function finalizeClaimedUploadOutcome(
+  input: ClaimedUploadInput,
+  dependencies: ClaimedUploadDependencies,
+): Promise<{ documentId: string; status: "pending"; outcome: "enqueued" | "fence_lost" }> {
   const result = { documentId: input.documentId, status: "pending" as const };
   const message = { jobId: input.jobId, documentId: input.documentId, kind: "ingest" as const };
 
@@ -48,7 +56,7 @@ export async function finalizeClaimedUpload(
     } catch {
       throw new ClaimedUploadError("queue_unavailable");
     }
-    return result;
+    return { ...result, outcome: "enqueued" };
   }
 
   const winner = input as Extract<ClaimedUploadInput, { claim: WinningUploadClaim }>;
@@ -64,7 +72,7 @@ export async function finalizeClaimedUpload(
     );
     if (!finalized) {
       await Promise.allSettled([dependencies.store.deleteOriginal(r2Key)]);
-      return result;
+      return { ...result, outcome: "fence_lost" };
     }
   } catch {
     await Promise.allSettled([
@@ -85,7 +93,7 @@ export async function finalizeClaimedUpload(
   }
 
   await dependencies.repository.clearUploadClaim(input.documentId, token, nowIso(dependencies));
-  return result;
+  return { ...result, outcome: "enqueued" };
 }
 
 function nowIso(dependencies: ClaimedUploadDependencies): string {

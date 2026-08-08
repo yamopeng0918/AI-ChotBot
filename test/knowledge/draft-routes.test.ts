@@ -14,11 +14,23 @@ const pending: KnowledgeDraft = {
   expiresAt: "2026-11-06T00:00:00.000Z", reviewedAt: null,
 };
 
-function setup(options: { queueFails?: boolean; topic?: string; markdown?: string; claimDisposition?: "winner" | "resume_queue" } = {}) {
+function setup(options: { queueFails?: boolean; topic?: string; markdown?: string; claimDisposition?: "winner" | "resume_queue" | "duplicate"; complete?: boolean } = {}) {
   let draft = { ...structuredClone(pending), ...(options.topic === undefined ? {} : { topic: options.topic }), ...(options.markdown === undefined ? {} : { markdown: options.markdown }) };
   const drafts = {
     list: vi.fn(async (_status: string, _limit: number) => [draft]),
     get: vi.fn(async (id: string) => id === draft.id ? structuredClone(draft) : null),
+    reserveApproval: vi.fn(async (id: string, documentId: string, reservedAt: string) => {
+      if (id !== draft.id) return "not_found" as const;
+      if (draft.status === "approved") return draft.documentId === documentId ? "approved" as const : "conflict" as const;
+      if (draft.status === "rejected" || (draft.documentId !== null && draft.documentId !== documentId)) return "conflict" as const;
+      draft = { ...draft, documentId, updatedAt: reservedAt };
+      return "reserved" as const;
+    }),
+    releaseApproval: vi.fn(async (id: string, documentId: string, releasedAt: string) => {
+      if (id !== draft.id || draft.status !== "pending" || draft.documentId !== documentId) return false;
+      draft = { ...draft, documentId: null, updatedAt: releasedAt };
+      return true;
+    }),
     approve: vi.fn(async (id: string, documentId: string, reviewedAt: string) => {
       if (id !== draft.id) return "not_found" as const;
       if (draft.status === "rejected") return "conflict" as const;
@@ -27,16 +39,16 @@ function setup(options: { queueFails?: boolean; topic?: string; markdown?: strin
     }),
     reject: vi.fn(async (id: string, reviewedAt: string) => {
       if (id !== draft.id) return "not_found" as const;
-      if (draft.status === "approved") return "conflict" as const;
+      if (draft.status === "approved" || (draft.status === "pending" && draft.documentId !== null)) return "conflict" as const;
       draft = { ...draft, status: "rejected", reviewedAt, updatedAt: reviewedAt };
       return "rejected" as const;
     }),
   };
   const knowledge = {
-    claimUpload: vi.fn(async (_document: unknown, _jobId: string) => options.claimDisposition === "resume_queue"
-      ? { disposition: "resume_queue" as const }
+    claimUpload: vi.fn(async (_document: unknown, _jobId: string) => options.claimDisposition && options.claimDisposition !== "winner"
+      ? { disposition: options.claimDisposition }
       : { disposition: "winner" as const, token: "claim", r2Key: "generated.md", previousR2Key: null }),
-    completeUpload: vi.fn(async () => true), failUpload: vi.fn(async () => true), clearUploadClaim: vi.fn(async () => true),
+    completeUpload: vi.fn(async () => options.complete ?? true), failUpload: vi.fn(async () => true), clearUploadClaim: vi.fn(async () => true),
   };
   const objectStore = {
     putOriginal: vi.fn(async () => undefined), getOriginal: vi.fn(), deleteOriginal: vi.fn(async () => undefined),
@@ -150,6 +162,27 @@ describe("knowledge draft review API", () => {
     expect(objectStoreFactory).not.toHaveBeenCalled();
   });
 
+  test("resume_queue publishes the reserved draft with stable IDs without writing R2", async () => {
+    const d = setup({ claimDisposition: "resume_queue" });
+    const response = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+    expect(response.status).toBe(202);
+    expect(d.objectStore.putOriginal).not.toHaveBeenCalled();
+    expect(d.ingestionQueue.send).toHaveBeenCalledOnce();
+    expect(d.current()).toMatchObject({ status: "approved", documentId: expect.any(String) });
+  });
+
+  test("duplicate upload state finalizes the reservation without another R2 write or Queue message", async () => {
+    const d = setup({ claimDisposition: "duplicate" });
+    const first = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+    expect(first.status).toBe(200);
+    const body = await first.json();
+    const repeated = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+    expect(await repeated.json()).toEqual(body);
+    expect(d.objectStore.putOriginal).not.toHaveBeenCalled();
+    expect(d.ingestionQueue.send).not.toHaveBeenCalled();
+    expect(d.knowledge.claimUpload).toHaveBeenCalledOnce();
+  });
+
   test("a synchronous Queue factory failure after a winning upload fails and cleans up safely", async () => {
     const d = setup();
     const worker = createWorker({
@@ -172,7 +205,8 @@ describe("knowledge draft review API", () => {
     const first = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
     expect(first.status).toBe(503);
     expect(await first.json()).toEqual({ error: { code: "queue_unavailable", message: "Queue unavailable" } });
-    expect(d.current().status).toBe("pending");
+    expect(d.current()).toMatchObject({ status: "pending", documentId: null });
+    expect(d.drafts.releaseApproval).toHaveBeenCalledOnce();
     const firstClaim = d.knowledge.claimUpload.mock.calls[0]!;
     const firstDocument = firstClaim[0] as { id: string };
     const firstMessage = d.ingestionQueue.send.mock.calls[0]![0];
@@ -182,6 +216,27 @@ describe("knowledge draft review API", () => {
     expect((d.knowledge.claimUpload.mock.calls[1]![0] as { id: string }).id).toBe(firstDocument.id);
     expect(d.knowledge.claimUpload.mock.calls[1]![1]).toBe(firstClaim[1]);
     expect(d.ingestionQueue.send.mock.calls[1]![0]).toEqual(firstMessage);
+  });
+
+  test("does not approve or enqueue when completeUpload loses its fence", async () => {
+    const d = setup({ complete: false });
+    const response = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+    expect(response.status).toBe(409);
+    expect(d.ingestionQueue.send).not.toHaveBeenCalled();
+    expect(d.drafts.approve).not.toHaveBeenCalled();
+    expect(d.drafts.releaseApproval).not.toHaveBeenCalled();
+    expect(d.current()).toMatchObject({ status: "pending", documentId: expect.any(String) });
+  });
+
+  test("reservation wins an approve versus reject interleaving", async () => {
+    const d = setup();
+    d.knowledge.claimUpload.mockImplementationOnce(async (_document, _jobId) => {
+      await d.drafts.reject("draft-1", "2026-08-08T00:00:01.000Z");
+      return { disposition: "winner" as const, token: "claim", r2Key: "generated.md", previousR2Key: null };
+    });
+    const response = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+    expect(response.status).toBe(202);
+    expect(d.current()).toMatchObject({ status: "approved", documentId: expect.any(String) });
   });
 
   test("returns the persisted approval when marking loses a race without enqueueing another job", async () => {

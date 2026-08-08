@@ -55,7 +55,7 @@ export class KnowledgeDraftRepository {
       ON CONFLICT(dedupe_key) DO UPDATE SET
         topic=excluded.topic, markdown=excluded.markdown, sources_json=excluded.sources_json,
         updated_at=excluded.updated_at, expires_at=excluded.expires_at
-      WHERE knowledge_drafts.status='pending'`).bind(
+      WHERE knowledge_drafts.status='pending' AND knowledge_drafts.document_id IS NULL`).bind(
       draft.id, draft.topic, draft.markdown, JSON.stringify(draft.sources), draft.dedupeKey,
       draft.createdAt, draft.createdAt, draft.expiresAt,
     ).run();
@@ -81,11 +81,32 @@ export class KnowledgeDraftRepository {
     if (!isNonEmptyString(documentId)) throw new RangeError("documentId must be a non-empty string");
     const result = await this.db.prepare(`UPDATE knowledge_drafts
       SET status='approved', document_id=?, reviewed_at=?, updated_at=?
-      WHERE id=? AND status='pending'`).bind(documentId, reviewedAt, reviewedAt, id).run();
+      WHERE id=? AND status='pending' AND (document_id IS NULL OR document_id=?)`).bind(documentId, reviewedAt, reviewedAt, id, documentId).run();
     if (result.meta.changes === 1) return "approved";
     const draft = await this.get(id);
     if (!draft) return "not_found";
     return draft.status === "approved" && draft.documentId === documentId ? "approved" : "conflict";
+  }
+
+  async reserveApproval(id: string, documentId: string, now: string): Promise<"reserved" | "approved" | "conflict" | "not_found"> {
+    const reservedAt = normalizeTimestamp(now, "now");
+    if (!isNonEmptyString(documentId)) throw new RangeError("documentId must be a non-empty string");
+    const result = await this.db.prepare(`UPDATE knowledge_drafts SET document_id=?, updated_at=?
+      WHERE id=? AND status='pending' AND document_id IS NULL`).bind(documentId, reservedAt, id).run();
+    if (result.meta.changes === 1) return "reserved";
+    const draft = await this.get(id);
+    if (!draft) return "not_found";
+    if (draft.status === "approved" && draft.documentId === documentId) return "approved";
+    if (draft.status === "pending" && draft.documentId === documentId) return "reserved";
+    return "conflict";
+  }
+
+  async releaseApproval(id: string, documentId: string, now: string): Promise<boolean> {
+    const releasedAt = normalizeTimestamp(now, "now");
+    if (!isNonEmptyString(documentId)) throw new RangeError("documentId must be a non-empty string");
+    const result = await this.db.prepare(`UPDATE knowledge_drafts SET document_id=NULL, updated_at=?
+      WHERE id=? AND status='pending' AND document_id=?`).bind(releasedAt, id, documentId).run();
+    return result.meta.changes === 1;
   }
 
   async reject(id: string, now: string): Promise<"rejected" | "conflict" | "not_found"> {
@@ -93,7 +114,7 @@ export class KnowledgeDraftRepository {
     const expiresAt = thirtyDaysAfter(reviewedAt);
     const result = await this.db.prepare(`UPDATE knowledge_drafts
       SET status='rejected', reviewed_at=?, updated_at=?, expires_at=?
-      WHERE id=? AND status='pending'`).bind(reviewedAt, reviewedAt, expiresAt, id).run();
+      WHERE id=? AND status='pending' AND document_id IS NULL`).bind(reviewedAt, reviewedAt, expiresAt, id).run();
     if (result.meta.changes === 1) return "rejected";
     const draft = await this.get(id);
     if (!draft) return "not_found";
@@ -106,7 +127,7 @@ export class KnowledgeDraftRepository {
     await this.db.batch([
       this.db.prepare(`UPDATE knowledge_drafts
         SET status='rejected', reviewed_at=?, updated_at=?, expires_at=?
-        WHERE status='pending' AND expires_at<=?`).bind(reviewedAt, reviewedAt, rejectedExpiry, reviewedAt),
+        WHERE status='pending' AND document_id IS NULL AND expires_at<=?`).bind(reviewedAt, reviewedAt, rejectedExpiry, reviewedAt),
       this.db.prepare("DELETE FROM knowledge_drafts WHERE status='rejected' AND expires_at<=?").bind(reviewedAt),
       this.db.prepare(`DELETE FROM knowledge_drafts WHERE status='approved'
         AND NOT EXISTS (SELECT 1 FROM knowledge_documents WHERE id=knowledge_drafts.document_id)`),

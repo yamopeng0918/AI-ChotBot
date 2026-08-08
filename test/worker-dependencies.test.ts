@@ -18,6 +18,13 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function draftReviewsStub() {
+  return {
+    list: vi.fn(), get: vi.fn(), reserveApproval: vi.fn(), releaseApproval: vi.fn(),
+    approve: vi.fn(), reject: vi.fn(), purgeExpired: vi.fn(),
+  };
+}
+
 it("enables production logs and explicitly disables phase-one traces", () => {
   const config = unstable_readConfig(
     { config: "wrangler.jsonc" },
@@ -81,7 +88,7 @@ describe("createWorker repository injection", () => {
       purgeExpired: vi.fn().mockResolvedValue(2),
     };
     const factory = vi.fn(() => repository);
-    const drafts = { list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(), purgeExpired: vi.fn() };
+    const drafts = draftReviewsStub();
     const draftFactory = vi.fn(() => drafts);
     const worker = createWorker({ questions: factory, draftReviews: draftFactory, now: () => new Date("2026-07-18T12:34:56.000Z") });
     const env = {} as Env;
@@ -266,7 +273,7 @@ describe("cron telemetry", () => {
     };
     const worker = createWorker({
       questions: repository,
-      draftReviews: { list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(), purgeExpired: vi.fn() },
+      draftReviews: draftReviewsStub(),
       logger: { emit: (event) => events.push(event) },
       now: () => now,
     });
@@ -298,7 +305,7 @@ describe("cron telemetry", () => {
     };
     const worker = createWorker({
       questions: repository,
-      draftReviews: { list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(), purgeExpired: vi.fn() },
+      draftReviews: draftReviewsStub(),
       logger: { emit: (event) => events.push(event) },
       now: () => now,
     });
@@ -320,10 +327,7 @@ describe("cron telemetry", () => {
       claim: vi.fn(), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(),
       purgeExpired: vi.fn().mockRejectedValue(new Error("question secret")),
     };
-    const drafts = {
-      list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(),
-      purgeExpired: vi.fn().mockRejectedValue(new Error("draft secret")),
-    };
+    const drafts = { ...draftReviewsStub(), purgeExpired: vi.fn().mockRejectedValue(new Error("draft secret")) };
     const events: TelemetryEvent[] = [];
     const worker = createWorker({ questions, draftReviews: drafts, logger: { emit: (event) => events.push(event) } });
 

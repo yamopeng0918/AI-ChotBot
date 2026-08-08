@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import { ClaimedUploadError, finalizeClaimedUpload } from "../../src/knowledge/claimed-upload";
+import { ClaimedUploadError, finalizeClaimedUpload, finalizeClaimedUploadOutcome } from "../../src/knowledge/claimed-upload";
 
 const createdAt = "2026-07-20T00:00:00.000Z";
 
@@ -52,6 +52,14 @@ describe("finalizeClaimedUpload", () => {
 
     expect(d.order).toEqual(["put", "complete", "delete:doc.md"]);
     expect(d.repository.failUpload).not.toHaveBeenCalled();
+  });
+
+  test("exposes fencing loss to internal callers while preserving the public upload result", async () => {
+    const d = setup({ complete: false });
+    await expect(finalizeClaimedUploadOutcome(d.input, {
+      repository: d.repository, store: d.store, queue: d.queue as never,
+    })).resolves.toEqual({ documentId: "doc", status: "pending", outcome: "fence_lost" });
+    expect(d.queue.send).not.toHaveBeenCalled();
   });
 
   test("marks the upload failed and cleans up its object when storage fails", async () => {

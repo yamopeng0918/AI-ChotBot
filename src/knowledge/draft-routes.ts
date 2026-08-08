@@ -3,12 +3,12 @@ import type { Context, Hono } from "hono";
 import type { Env } from "../config";
 import { requireKnowledgeAdmin } from "./admin-auth";
 import { claimedUploadDependencies, stableUuid, type KnowledgeAdminRepository } from "./admin-routes";
-import { ClaimedUploadError, finalizeClaimedUpload } from "./claimed-upload";
+import { ClaimedUploadError, finalizeClaimedUploadOutcome } from "./claimed-upload";
 import type { KnowledgeDraft, KnowledgeDraftRepository, KnowledgeDraftStatus } from "./drafts";
 import type { KnowledgeObjectStore } from "./storage";
 import type { IngestionJobMessage } from "./types";
 
-export type KnowledgeDraftReviewRepository = Pick<KnowledgeDraftRepository, "list" | "get" | "approve" | "reject" | "purgeExpired">;
+export type KnowledgeDraftReviewRepository = Pick<KnowledgeDraftRepository, "list" | "get" | "reserveApproval" | "releaseApproval" | "approve" | "reject" | "purgeExpired">;
 export type KnowledgeDraftRouteDependencies = {
   draftsFor: (env: Env) => KnowledgeDraftReviewRepository;
   knowledgeFor: (env: Env) => Pick<KnowledgeAdminRepository, "claimUpload" | "completeUpload" | "failUpload" | "clearUploadClaim">;
@@ -82,27 +82,41 @@ async function approveDraft(context: Context<{ Bindings: Env }>, dependencies: K
   ]);
   const createdAt = currentTime(dependencies);
   const displayName = `${safeTopic(draft.topic)}.md`;
-  const knowledge = dependencies.knowledgeFor(context.env);
-  const claim = await knowledge.claimUpload({
-    id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key: null, contentHash, createdAt,
-  }, jobId, createdAt, ".md");
-
-  if (claim.disposition !== "winner") {
-    if (claim.disposition === "busy") return conflict(context);
-    if (claim.disposition === "duplicate") return persistApproval(context, drafts, draft.id, documentId, createdAt, 200);
-    await finalizeClaimedUpload(
-      { documentId, jobId, claim: { disposition: "resume_queue" }, createdAt },
-      claimedUploadDependencies(context.env, dependencies, knowledge),
-    );
-    return persistApproval(context, drafts, draft.id, documentId, createdAt, 202);
+  const reservation = await drafts.reserveApproval(draft.id, documentId, createdAt);
+  if (reservation === "not_found") return notFound(context);
+  if (reservation === "conflict") return conflict(context);
+  if (reservation === "approved") {
+    const persisted = await drafts.get(draft.id);
+    return persisted ? context.json({ draft: transitionView(persisted) }) : notFound(context);
   }
+  const knowledge = dependencies.knowledgeFor(context.env);
+  try {
+    const claim = await knowledge.claimUpload({
+      id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key: null, contentHash, createdAt,
+    }, jobId, createdAt, ".md");
 
-  await finalizeClaimedUpload({
-    documentId, jobId, claim,
-    blob: new Blob([draft.markdown], { type: "text/markdown; charset=utf-8" }),
-    displayName, mimeType: "text/markdown; charset=utf-8", createdAt,
-  }, claimedUploadDependencies(context.env, dependencies, knowledge));
-  return persistApproval(context, drafts, draft.id, documentId, createdAt, 202);
+    if (claim.disposition !== "winner") {
+      if (claim.disposition === "busy") return conflict(context);
+      if (claim.disposition === "duplicate") return persistApproval(context, drafts, draft.id, documentId, createdAt, 200);
+      const finalized = await finalizeClaimedUploadOutcome(
+        { documentId, jobId, claim: { disposition: "resume_queue" }, createdAt },
+        claimedUploadDependencies(context.env, dependencies, knowledge),
+      );
+      if (finalized.outcome === "fence_lost") return conflict(context);
+      return persistApproval(context, drafts, draft.id, documentId, createdAt, 202);
+    }
+
+    const finalized = await finalizeClaimedUploadOutcome({
+      documentId, jobId, claim,
+      blob: new Blob([draft.markdown], { type: "text/markdown; charset=utf-8" }),
+      displayName, mimeType: "text/markdown; charset=utf-8", createdAt,
+    }, claimedUploadDependencies(context.env, dependencies, knowledge));
+    if (finalized.outcome === "fence_lost") return conflict(context);
+    return persistApproval(context, drafts, draft.id, documentId, createdAt, 202);
+  } catch (error) {
+    await Promise.allSettled([drafts.releaseApproval(draft.id, documentId, currentTime(dependencies))]);
+    throw error;
+  }
 }
 
 async function persistApproval(

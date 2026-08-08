@@ -54,6 +54,30 @@ describe("KnowledgeDraftRepository", () => {
     expect(await repository.reject("draft-1", "2026-08-11T00:00:00.000Z")).toBe("conflict");
   });
 
+  test("atomically reserves pending publication against reject, refresh, and expiry", async () => {
+    await repository.createOrRefresh({ ...input, expiresAt: "2026-08-09T00:00:00.000Z" });
+    expect(await repository.reserveApproval("draft-1", "doc-1", "2026-08-08T01:00:00.000Z")).toBe("reserved");
+    expect(await repository.reserveApproval("draft-1", "doc-1", "2026-08-08T02:00:00.000Z")).toBe("reserved");
+    expect(await repository.reserveApproval("draft-1", "doc-2", "2026-08-08T02:00:00.000Z")).toBe("conflict");
+    expect(await repository.reject("draft-1", "2026-08-08T03:00:00.000Z")).toBe("conflict");
+
+    await repository.createOrRefresh({ ...input, id: "replacement", markdown: "# changed", createdAt: "2026-08-09T00:00:00.000Z" });
+    await repository.purgeExpired("2026-08-10T00:00:00.000Z");
+    expect(await repository.get("draft-1")).toMatchObject({
+      status: "pending", documentId: "doc-1", markdown: input.markdown,
+      updatedAt: "2026-08-08T01:00:00.000Z",
+    });
+  });
+
+  test("releases only the matching reservation so a failed publication can retry", async () => {
+    await repository.createOrRefresh(input);
+    await repository.reserveApproval("draft-1", "doc-1", "2026-08-08T01:00:00.000Z");
+    expect(await repository.releaseApproval("draft-1", "doc-2", "2026-08-08T02:00:00.000Z")).toBe(false);
+    expect(await repository.releaseApproval("draft-1", "doc-1", "2026-08-08T02:00:00.000Z")).toBe(true);
+    expect(await repository.get("draft-1")).toMatchObject({ status: "pending", documentId: null });
+    expect(await repository.reserveApproval("draft-1", "doc-1", "2026-08-08T03:00:00.000Z")).toBe("reserved");
+  });
+
   test("clamps list limits and strictly rejects malformed decoded sources", async () => {
     await db.batch(Array.from({ length: 101 }, (_, index) => db.prepare(`INSERT INTO knowledge_drafts
       (id,status,topic,markdown,sources_json,dedupe_key,created_at,updated_at,expires_at)

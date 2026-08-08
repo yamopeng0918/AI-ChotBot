@@ -7,6 +7,17 @@ export type GroundedAnswer = { text: string; citations: string[]; model: string 
 export type GroundedAnswerRequest = { question: string; evidence: KnowledgeEvidence[]; webUnavailable: boolean };
 export type EntailmentChecker = (claim: string, citedEvidenceText: string) => Promise<boolean>;
 type Parsed = { answer: string; claims: GroundedClaim[] };
+export type GroundedValidationFailureReason =
+  | "parse_invalid"
+  | "answer_claim_mismatch"
+  | "citation_invalid"
+  | "location_invalid"
+  | "conflict"
+  | "entailment_failed";
+export type GroundedValidationEvent =
+  | { attempt: 1 | 2; outcome: "failed"; reason: GroundedValidationFailureReason; model?: string }
+  | { attempt: 1 | 2; outcome: "success"; reason: "validated"; model?: string };
+type ValidationResult = GroundedValidationFailureReason | null;
 
 export async function strictEntailment(claim: string, evidence: string): Promise<boolean> {
   const expected = semanticText(claim);
@@ -17,6 +28,7 @@ export class GroundedAnswerService {
   constructor(
     private readonly generator: GroundedGenerator,
     private readonly entails: EntailmentChecker = strictEntailment,
+    private readonly observe?: (event: GroundedValidationEvent) => void,
   ) {}
 
   async answer(request: GroundedAnswerRequest): Promise<GroundedAnswer> {
@@ -26,10 +38,19 @@ export class GroundedAnswerService {
     for (let attempt = 0; attempt < 2; attempt++) {
       const generated = await this.generator.generate(messages); lastModel = generated.model;
       const parsed = parse(generated.text);
-      if (parsed && await validate(parsed, request.evidence, this.entails)) return render(parsed, request.evidence, generated.model);
+      const reason = parsed ? await validate(parsed, request.evidence, this.entails) : "parse_invalid";
+      if (reason === null) {
+        this.observeValidation({ attempt: (attempt + 1) as 1 | 2, outcome: "success", reason: "validated", model: generated.model });
+        return render(parsed!, request.evidence, generated.model);
+      }
+      this.observeValidation({ attempt: (attempt + 1) as 1 | 2, outcome: "failed", reason, model: generated.model });
       if (attempt === 0) messages.push({ role: "user", content: "Your output was invalid or unsupported. Return corrected strict JSON using only evidence IDs and fully cited, entailed factual claims." });
     }
     return fallback(lastModel);
+  }
+
+  private observeValidation(event: GroundedValidationEvent): void {
+    try { this.observe?.(event); } catch {}
   }
 }
 
@@ -58,19 +79,20 @@ function normalizeFencedJson(raw: string): string {
   const match = /^```json\r?\n([\s\S]*?)\r?\n```$/u.exec(raw);
   return match ? match[1]! : raw;
 }
-async function validate(parsed: Parsed, evidence: KnowledgeEvidence[], entails: EntailmentChecker): Promise<boolean> {
-  if (normalize(parsed.answer) !== normalize(parsed.claims.map((c) => c.text).join(" "))) return false;
+async function validate(parsed: Parsed, evidence: KnowledgeEvidence[], entails: EntailmentChecker): Promise<ValidationResult> {
+  if (normalize(parsed.answer) !== normalize(parsed.claims.map((c) => c.text).join(" "))) return "answer_claim_mismatch";
   const byId = new Map(evidence.map((item) => [item.id, item]));
   const citedAcrossClaims: KnowledgeEvidence[][] = [];
   for (const claim of parsed.claims) {
-    if (!claim.evidenceIds.length || new Set(claim.evidenceIds).size !== claim.evidenceIds.length) return false;
-    const cited = claim.evidenceIds.map((id) => byId.get(id)); if (cited.some((item) => !item)) return false;
+    if (!claim.evidenceIds.length || new Set(claim.evidenceIds).size !== claim.evidenceIds.length) return "citation_invalid";
+    const cited = claim.evidenceIds.map((id) => byId.get(id)); if (cited.some((item) => !item)) return "citation_invalid";
     const valid = cited as KnowledgeEvidence[];
-    if (valid.some((item) => !renderableLocation(item)) || conflictingEvidence(valid)) return false;
+    if (valid.some((item) => !renderableLocation(item))) return "location_invalid";
+    if (conflictingEvidence(valid)) return "conflict";
     citedAcrossClaims.push(valid);
-    if (!await entails(claim.text, valid.map((item) => item.text).join("\n"))) return false;
+    if (!await entails(claim.text, valid.map((item) => item.text).join("\n"))) return "entailment_failed";
   }
-  return !crossClaimConflict(parsed.claims, citedAcrossClaims);
+  return crossClaimConflict(parsed.claims, citedAcrossClaims) ? "conflict" : null;
 }
 function conflictingEvidence(evidence: KnowledgeEvidence[]): boolean {
   const facts = evidence.map((item) => factValues(item.text));

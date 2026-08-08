@@ -1,3 +1,5 @@
+import type { GroundedValidationEvent } from "../answers/grounded";
+
 export const TELEMETRY_EVENT_NAMES = [
   "webhook.rejected",
   "webhook.enqueue.completed",
@@ -19,6 +21,7 @@ export const TELEMETRY_EVENT_NAMES = [
   "answer.ai.attempt.completed",
   "answer.ai.attempt.failed",
   "answer.ai.fallback.started",
+  "answer.grounded.validation",
   "answer.prepared.reused",
   "answer.completed",
   "answer.failed",
@@ -70,7 +73,7 @@ type TelemetryCorrelation =
   | { operationId: string; webhookEventId?: never };
 
 type TelemetryFields = {
-  event: Exclude<TelemetryEventName, "knowledge_draft.create">;
+  event: Exclude<TelemetryEventName, "knowledge_draft.create" | "answer.grounded.validation">;
   stage: TelemetryStage;
   outcome: TelemetryOutcome;
   timestamp: string;
@@ -93,7 +96,15 @@ type KnowledgeDraftTelemetryEvent = {
   operationId?: never;
 };
 
-export type TelemetryEvent = (TelemetryFields & TelemetryCorrelation) | KnowledgeDraftTelemetryEvent;
+type GroundedValidationTelemetryEvent = GroundedValidationEvent & {
+  event: "answer.grounded.validation";
+  stage: "answer";
+  timestamp: string;
+  webhookEventId?: never;
+  operationId?: never;
+};
+
+export type TelemetryEvent = (TelemetryFields & TelemetryCorrelation) | KnowledgeDraftTelemetryEvent | GroundedValidationTelemetryEvent;
 export type TelemetryEventInput = TelemetryEvent extends infer Event
   ? Event extends TelemetryEvent
     ? Omit<Event, "timestamp">
@@ -105,6 +116,8 @@ type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 type ForbiddenTelemetryKey =
   | "question"
   | "answer"
+  | "claim"
+  | "evidence"
   | "userId"
   | "groupId"
   | "replyToken"
@@ -134,6 +147,28 @@ function projectEvent(event: TelemetryEvent): TelemetryRecord {
       timestamp: event.timestamp,
       sourceCount: event.sourceCount,
       ...(event.errorType !== undefined ? { errorType: event.errorType } : {}),
+    };
+  }
+  if (event.event === "answer.grounded.validation") {
+    if (event.outcome === "success") {
+      return {
+        event: event.event,
+        stage: event.stage,
+        outcome: event.outcome,
+        reason: event.reason,
+        attempt: event.attempt,
+        timestamp: event.timestamp,
+        ...(event.model !== undefined ? { model: event.model } : {}),
+      };
+    }
+    return {
+      event: event.event,
+      stage: event.stage,
+      outcome: event.outcome,
+      reason: event.reason,
+      attempt: event.attempt,
+      timestamp: event.timestamp,
+      ...(event.model !== undefined ? { model: event.model } : {}),
     };
   }
   const fields = {

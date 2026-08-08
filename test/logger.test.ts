@@ -6,6 +6,8 @@ type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 type ForbiddenTelemetryKey =
   | "question"
   | "answer"
+  | "claim"
+  | "evidence"
   | "userId"
   | "groupId"
   | "replyToken"
@@ -149,6 +151,25 @@ describe("structured telemetry logger", () => {
 
     expect(write).toHaveBeenCalledWith({
       event: "knowledge_draft.create", outcome: "success", sourceCount: 1,
+      timestamp: "2026-07-25T10:00:00.000Z",
+    });
+  });
+
+  it("projects grounded validation telemetry without injected content", () => {
+    const write = vi.fn();
+    const logger = createConsoleTelemetryLogger(write);
+    logger.emit({
+      event: "answer.grounded.validation", stage: "answer", outcome: "failed",
+      reason: "entailment_failed", attempt: 1, model: "grounded-model",
+      timestamp: "2026-07-25T10:00:00.000Z",
+      question: "private question", answer: "private answer", claim: "private claim", evidence: "private evidence",
+      url: "https://private.example", snippet: "private snippet", providerPayload: { private: true },
+      authorization: "Bearer private", token: "private token",
+    } as unknown as TelemetryEvent);
+
+    expect(write).toHaveBeenCalledWith({
+      event: "answer.grounded.validation", stage: "answer", outcome: "failed",
+      reason: "entailment_failed", attempt: 1, model: "grounded-model",
       timestamp: "2026-07-25T10:00:00.000Z",
     });
   });

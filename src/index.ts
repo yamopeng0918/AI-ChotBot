@@ -4,7 +4,7 @@ import { isAdminCommand, parseAdminCommand } from "./admin/commands";
 import { GroupAdminsRepository } from "./admin/group-admins";
 import { handleAdminCommand } from "./admin/handler";
 import { WorkersAiAnswerService } from "./answers/openrouter";
-import { GroundedAnswerService } from "./answers/grounded";
+import { GroundedAnswerService, type GroundedValidationEvent } from "./answers/grounded";
 import {
   FallbackGroundedGenerator,
   OpenRouterGroundedGenerator,
@@ -298,7 +298,11 @@ return {
       return {
         retriever: new KnowledgeRetriever(new EmbeddingService(env.AI), new KnowledgeVectorStore(env.VECTORIZE), retrievalRepository, { now: () => (overrides.now?.() ?? new Date()).toISOString() }),
         webSearch: new TavilySearchService(fetcher, env.TAVILY_API_KEY, () => (overrides.now?.() ?? new Date()).toISOString()),
-        groundedAnswerService: new GroundedAnswerService(groundedGenerator),
+        groundedAnswerService: new GroundedAnswerService(
+          groundedGenerator,
+          undefined,
+          (event: GroundedValidationEvent) => emit({ event: "answer.grounded.validation", stage: "answer", ...event }),
+        ),
       };
     })() : {});
     const knowledgeDrafts = knowledgeAnswering.retriever && knowledgeAnswering.webSearch && knowledgeAnswering.groundedAnswerService

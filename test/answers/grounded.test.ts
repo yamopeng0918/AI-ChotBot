@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { GroundedAnswerService, INSUFFICIENT_EVIDENCE_TEXT } from "../../src/answers/grounded";
+import {
+  GroundedAnswerService,
+  INSUFFICIENT_EVIDENCE_TEXT,
+  type GroundedValidationEvent,
+  type GroundedValidationFailureReason,
+} from "../../src/answers/grounded";
 import { OpenRouterGroundedGenerator, WorkersAiGroundedGenerator } from "../../src/answers/grounded-generators";
 import type { KnowledgeEvidence } from "../../src/knowledge/types";
 
@@ -163,6 +168,40 @@ describe("GroundedAnswerService", () => {
     expect(generate).toHaveBeenCalledTimes(2);
     expect(generate.mock.calls[1]![0][2].content).toContain("correct");
     expect(answer).toEqual({ text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model: "second", usedEvidenceIds: [], validatedClaims: [] });
+  });
+
+  it.each([
+    ["malformed output", "not JSON", [file], async () => true, "parse_invalid"],
+    ["answer mismatch", JSON.stringify({ answer: "Other claim.", claims: [{ text: "Claim.", evidenceIds: ["kb-1"] }] }), [file], async () => true, "answer_claim_mismatch"],
+    ["invalid evidence ID", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: ["missing"] }] }), [file], async () => true, "citation_invalid"],
+    ["unrenderable citation location", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: ["kb-1"] }] }), [{ ...file, text: "Claim.", pageNumber: null, sectionPath: null }], async () => true, "location_invalid"],
+    ["conflicting cited evidence", JSON.stringify({ answer: "The event is in 2026.", claims: [{ text: "The event is in 2026.", evidenceIds: ["a", "b"] }] }), [{ ...file, id: "a", text: "The event is in 2025." }, { ...file, id: "b", text: "The event is in 2026." }], async () => true, "conflict"],
+    ["strict entailment failure", JSON.stringify({ answer: "Wrong.", claims: [{ text: "Wrong.", evidenceIds: ["kb-1"] }] }), [file], async () => false, "entailment_failed"],
+    ["cross-claim conflict", JSON.stringify({ answer: "Registration is closed. Registration is open.", claims: [{ text: "Registration is closed.", evidenceIds: ["a"] }, { text: "Registration is open.", evidenceIds: ["b"] }] }), [{ ...file, id: "a", text: "Registration is closed." }, { ...file, id: "b", text: "Registration is open." }], async () => true, "conflict"],
+  ] satisfies ReadonlyArray<readonly [string, string, KnowledgeEvidence[], (claim: string, evidence: string) => Promise<boolean>, GroundedValidationFailureReason]>)("observes content-free %s failures", async (_name, output, evidence, entail, reason) => {
+    const events: GroundedValidationEvent[] = [];
+    const question = "private-question-fixture";
+    const generate = vi.fn().mockResolvedValue({ text: output, model: "grounded-model" });
+
+    await new GroundedAnswerService({ generate }, entail, (event) => events.push(event))
+      .answer({ question, evidence, webUnavailable: false });
+
+    expect(events).toEqual([
+      { attempt: 1, outcome: "failed", reason, model: "grounded-model" },
+      { attempt: 2, outcome: "failed", reason, model: "grounded-model" },
+    ]);
+    const serialized = JSON.stringify(events);
+    for (const forbidden of ["\"question\":", "\"answer\":", "\"claim\":", "\"evidence\":", "\"url\":", "\"snippet\":", "\"providerPayload\":", "\"authorization\":", "\"token\":", question, output, ...evidence.map((item) => item.text)]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it("observes success only after every validation gate passes", async () => {
+    const events: GroundedValidationEvent[] = [];
+    await new GroundedAnswerService({ generate: vi.fn().mockResolvedValue({ text: valid, model: "grounded-model" }) }, async () => true, (event) => events.push(event))
+      .answer({ question: "private-question-fixture", evidence: [file, page, web], webUnavailable: false });
+
+    expect(events).toEqual([{ attempt: 1, outcome: "success", reason: "validated", model: "grounded-model" }]);
   });
 
   it("fails closed without evidence and never calls the model", async () => {

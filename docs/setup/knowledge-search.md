@@ -44,6 +44,14 @@ npx.cmd wrangler secret put ANALYTICS_HASH_KEY
 npx.cmd wrangler secret put ADMIN_API_TOKEN
 ```
 
+`OPENROUTER_MODEL` is the primary grounded-answer model. `OPENROUTER_FALLBACK_MODEL` is optional; when present and different from the primary model, provider failures advance to it. Cloudflare Workers AI (`@cf/meta/llama-3.2-3b-instruct`) is always the terminal grounded fallback and still passes through citation validation.
+
+Verify the secret names without printing their values:
+
+```powershell
+npx.cmd wrangler secret list
+```
+
 ## Smoke the worker
 
 Run the local verification gates before any deploy:

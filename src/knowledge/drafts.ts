@@ -124,6 +124,7 @@ function validateCreateInput(input: CreateKnowledgeDraftInput): CreateKnowledgeD
   if (!isNonEmptyString(input.topic) || [...input.topic].length > 120) throw new RangeError("topic must contain 1 to 120 code points");
   if (!isNonEmptyString(input.markdown) || input.markdown.length > 65_536) throw new RangeError("markdown must contain 1 to 65536 code units");
   if (!Array.isArray(input.sources)) throw new TypeError("sources must be an array");
+  if (input.sources.length === 0) throw new RangeError("sources must not be empty");
   const sources = input.sources.map(decodeSource);
   return {
     ...input,

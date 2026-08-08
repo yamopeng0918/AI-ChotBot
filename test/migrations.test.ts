@@ -31,6 +31,7 @@ describe("knowledge draft migration", () => {
     await insert("pending", "pending", sources, "dedupe-pending", null, null);
     await expect(insert("bad-status", "unknown", sources, "dedupe-status", null, null)).rejects.toThrow();
     await expect(insert("bad-json", "pending", "not-json", "dedupe-json", null, null)).rejects.toThrow();
+    await expect(insert("empty-sources", "pending", "[]", "dedupe-empty", null, null)).rejects.toThrow();
     await expect(insert("duplicate", "pending", sources, "dedupe-pending", null, null)).rejects.toThrow();
     await expect(insert("missing-document", "approved", sources, "dedupe-approved", null, "2026-08-08T00:00:00.000Z")).rejects.toThrow();
   });

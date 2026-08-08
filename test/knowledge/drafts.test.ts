@@ -33,6 +33,10 @@ describe("KnowledgeDraftRepository", () => {
     expect(await repository.list("pending", 20)).toHaveLength(1);
   });
 
+  test("rejects empty source input before creating a draft", async () => {
+    await expect(repository.createOrRefresh({ ...input, sources: [] })).rejects.toThrow("sources must not be empty");
+  });
+
   test("uses deterministic transition results and preserves terminal rows", async () => {
     await repository.createOrRefresh(input);
     expect(await repository.reject("draft-1", "2026-08-10T00:00:00.000Z")).toBe("rejected");

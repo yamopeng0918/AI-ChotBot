@@ -3,7 +3,7 @@ CREATE TABLE knowledge_drafts (
   status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected')),
   topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 120),
   markdown TEXT NOT NULL CHECK (length(markdown) BETWEEN 1 AND 65536),
-  sources_json TEXT NOT NULL CHECK (json_valid(sources_json) AND json_type(sources_json) = 'array'),
+  sources_json TEXT NOT NULL CHECK (json_valid(sources_json) AND json_type(sources_json) = 'array' AND json_array_length(sources_json) >= 1),
   dedupe_key TEXT NOT NULL UNIQUE,
   document_id TEXT,
   created_at TEXT NOT NULL,

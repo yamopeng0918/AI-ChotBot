@@ -165,16 +165,21 @@ describe("knowledge search end-to-end harness", () => {
       deleteIds: vi.fn(async () => undefined),
     };
     const converter = {
-      convert: vi.fn(async (source: { documentId: string; indexVersion: number; blob: Blob; kind: "pdf" | "docx" | "text" | "markdown" | "jpeg" | "png"; name: string }) => ({
-        documentId: source.documentId,
-        indexVersion: source.indexVersion,
-        kind: source.kind,
-        name: source.name,
-        tokens: 64,
-        pages: source.kind === "pdf"
-          ? [{ pageNumber: 1, markdown: "## Metadata\n- Title: Runner Guide\n## Contents\n### Page 1\nRunner guide article\n", ocrApplied: null, diagnostics: { nonWhitespaceCharacters: 32, replacementRatio: 0, controlRatio: 0, hasReadableContent: true, ocrStatus: "unknown" as const } }]
-          : [{ pageNumber: null, markdown: "Runner guide article\n", ocrApplied: null, diagnostics: { nonWhitespaceCharacters: 20, replacementRatio: 0, controlRatio: 0, hasReadableContent: true } }],
-      })),
+      convert: vi.fn(async (source: { documentId: string; indexVersion: number; blob: Blob; kind: "pdf" | "docx" | "text" | "markdown" | "jpeg" | "png"; name: string }) => {
+        const markdown = source.kind === "pdf"
+          ? "## Metadata\n- Title: Runner Guide\n## Contents\n### Page 1\nRunner guide article\n"
+          : await source.blob.text();
+        return {
+          documentId: source.documentId,
+          indexVersion: source.indexVersion,
+          kind: source.kind,
+          name: source.name,
+          tokens: 64,
+          pages: source.kind === "pdf"
+            ? [{ pageNumber: 1, markdown, ocrApplied: null, diagnostics: { nonWhitespaceCharacters: 32, replacementRatio: 0, controlRatio: 0, hasReadableContent: true, ocrStatus: "unknown" as const } }]
+            : [{ pageNumber: null, markdown, ocrApplied: null, diagnostics: { nonWhitespaceCharacters: markdown.replace(/\s/g, "").length, replacementRatio: 0, controlRatio: 0, hasReadableContent: true } }],
+        };
+      }),
     };
     const embeddings = {
       embed: vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0))),
@@ -398,30 +403,40 @@ describe("knowledge search end-to-end harness", () => {
   });
 
   it("reviews a validated web draft into knowledge used by the same question", async () => {
-    const { worker, env, questionJobs, ingestionJobs, retriever, webSearch, groundedAnswerService } = fixture();
+    const { worker, env, questionJobs, ingestionJobs, lineReplies, retriever, webSearch, groundedAnswerService } = fixture();
     const webEvidence = {
       id: "web:run", sourceType: "web" as const, title: "Official Running Guide",
       url: "https://example.gov/running/recovery", text: "Reduce training load and rebuild gradually.",
       pageNumber: null, sectionPath: null, paragraphIndex: 0, retrievedAt: now.toISOString(), score: 0.9,
     };
-    const knowledgeEvidence = {
-      ...webEvidence, id: "kb:run", sourceType: "knowledge" as const, url: null, title: "Recovery card", score: 0.95,
-    };
-    retriever.retrieve
-      .mockResolvedValueOnce({ evidence: [], insufficient: true, topScore: null })
-      .mockResolvedValueOnce({ evidence: [knowledgeEvidence], insufficient: false, topScore: 0.95 });
+    let retrievalCount = 0;
+    retriever.retrieve.mockImplementation(async () => {
+      retrievalCount += 1;
+      if (retrievalCount === 1) return { evidence: [], insufficient: true, topScore: null };
+      const rows = await db.prepare(`SELECT c.vector_id vectorId,c.document_id documentId,c.text,d.display_name displayName
+        FROM knowledge_chunks c JOIN knowledge_documents d
+          ON d.id=c.document_id AND d.status='ready' AND d.active_version=c.index_version
+        ORDER BY c.segment_index`).all<{ vectorId: string; documentId: string; text: string; displayName: string }>();
+      if (!rows.results.length) return { evidence: [], insufficient: true, topScore: null };
+      return { evidence: rows.results.map((row) => ({
+        id: `chunk:${row.vectorId}`, sourceType: "knowledge" as const, title: row.displayName, url: null,
+        text: row.text, pageNumber: null, sectionPath: null, paragraphIndex: null,
+        retrievedAt: now.toISOString(), score: 0.95,
+      })), insufficient: false, topScore: 0.95 };
+    });
     webSearch.search.mockResolvedValue([webEvidence]);
-    groundedAnswerService.answer
-      .mockResolvedValueOnce({
+    groundedAnswerService.answer.mockImplementation(async ({ evidence }: { evidence: Array<{ id: string; sourceType: string }> }) => {
+      const selected = evidence[0]!;
+      return selected.sourceType === "web" ? {
         text: "Reduce training load and rebuild gradually.\n\nSources:\n[1] Official Running Guide — https://example.gov/running/recovery",
         citations: ["[1] Official Running Guide — https://example.gov/running/recovery"], model: "grounded-model",
         usedEvidenceIds: [webEvidence.id], validatedClaims: [{ text: "Reduce training load and rebuild gradually.", evidenceIds: [webEvidence.id] }],
-      })
-      .mockResolvedValueOnce({
-        text: "Reduce training load and rebuild gradually.\n\nSources:\n[1] Recovery card",
-        citations: ["[1] Recovery card"], model: "grounded-model",
-        usedEvidenceIds: [knowledgeEvidence.id], validatedClaims: [{ text: "Reduce training load and rebuild gradually.", evidenceIds: [knowledgeEvidence.id] }],
-      });
+      } : {
+        text: "Knowledge card says to reduce training load and rebuild gradually.\n\nSources:\n[1] Reviewed recovery card",
+        citations: ["[1] Reviewed recovery card"], model: "grounded-model",
+        usedEvidenceIds: [selected.id], validatedClaims: [{ text: "Knowledge card says to reduce training load and rebuild gradually.", evidenceIds: [selected.id] }],
+      };
+    });
     const text = "@running-bot How should I return to running after injury?";
     const first = lineWebhook({ webhookEventId: "event-draft-first", messageId: "message-draft-first", replyToken: "reply-draft-first", text });
     expect((await deliver(worker, env, first)).status).toBe(200);
@@ -435,15 +450,31 @@ describe("knowledge search end-to-end harness", () => {
     expect(approved.status).toBe(202);
     expect(ingestionJobs).toHaveLength(1);
     await worker.queue!(ingestionBatch(ingestionJobs.shift()!), env, {} as ExecutionContext);
-    const document = await db.prepare("SELECT status FROM knowledge_documents").first<{ status: string }>();
-    expect(document?.status).toBe("ready");
+    const reviewed = await db.prepare("SELECT status,document_id documentId,markdown FROM knowledge_drafts WHERE id=?")
+      .bind(pending!.id).first<{ status: string; documentId: string; markdown: string }>();
+    const document = await db.prepare("SELECT id,status FROM knowledge_documents WHERE id=?")
+      .bind(reviewed!.documentId).first<{ id: string; status: string }>();
+    const chunk = await db.prepare("SELECT document_id documentId,text FROM knowledge_chunks WHERE document_id=?")
+      .bind(reviewed!.documentId).first<{ documentId: string; text: string }>();
+    expect(reviewed).toEqual({ status: "approved", documentId: expect.any(String), markdown: expect.any(String) });
+    expect(document).toEqual({ id: reviewed!.documentId, status: "ready" });
+    expect(chunk?.documentId).toBe(reviewed!.documentId);
+    expect(chunk?.text).toContain("Reduce training load and rebuild gradually\\.");
+    expect(reviewed!.markdown).toContain(chunk!.text.trim());
 
     const second = lineWebhook({ webhookEventId: "event-draft-second", messageId: "message-draft-second", replyToken: "reply-draft-second", text });
     expect((await deliver(worker, env, second)).status).toBe(200);
     await worker.queue!(questionBatch([questionJobs.shift()!]), env, {} as ExecutionContext);
     expect(webSearch.search).toHaveBeenCalledTimes(1);
     expect(retriever.retrieve).toHaveBeenCalledTimes(2);
-    expect(groundedAnswerService.answer).toHaveBeenLastCalledWith(expect.objectContaining({ evidence: [knowledgeEvidence] }));
+    const secondEvidence = groundedAnswerService.answer.mock.calls[1]?.[0].evidence
+      .find((item: { text: string }) => item.text.includes("Reduce training load and rebuild gradually\\."));
+    expect(secondEvidence).toMatchObject({ sourceType: "knowledge", text: expect.stringContaining("Reduce training load and rebuild gradually\\.") });
+    expect(secondEvidence.id).toMatch(/^chunk:[0-9a-f]{64}$/);
+    expect(lineReplies.at(-1)).toEqual({
+      replyToken: "reply-draft-second",
+      messages: [{ type: "text", text: "Knowledge card says to reduce training load and rebuild gradually.\n\nSources:\n[1] Reviewed recovery card" }],
+    });
   });
 
   it("reindexes through the real worker while keeping the old version searchable until publish", async () => {

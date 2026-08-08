@@ -36,6 +36,10 @@ describe("buildKnowledgeDraft", () => {
     expect(built?.markdown).toContain("## 重點整理");
     expect(built?.markdown).toContain("待管理員審核後才會發布");
     expect(built?.markdown).toContain("醫療專業人員");
+    expect(built).toMatchObject({
+      createdAt: "2026-08-08T00:00:00.000Z",
+      expiresAt: "2026-11-06T00:00:00.000Z",
+    });
     expect(built?.markdown).not.toContain("unused snippet");
     expect(built?.markdown).not.toContain("line-user-id-should-not-appear");
     expect(built?.markdown).not.toContain("不可採信的回答來源區塊");

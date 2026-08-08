@@ -120,3 +120,30 @@ Change only the Workers AI grounded fallback constant/request. Pass the closed J
 - [ ] **Step 4: Verify and commit**
 
 Run focused tests, full tests, typecheck, and Wrangler dry-run. Commit `fix: use structured Workers AI grounded fallback`.
+
+### Task 4: Safely classify Workers AI binding failures
+
+**Files:**
+- Modify: `src/answers/grounded-generators.ts`
+- Modify: `test/answers/grounded-generators.test.ts`
+
+**Interfaces:**
+- Consumes: an unknown exception rejected by `Ai.run`.
+- Produces: the existing `GroundedProviderError` with optional safe metadata `{ errorName?, code?, status? }`, projected into `attempt.failed` without raw exception content.
+
+- [ ] **Step 1: Write RED tests**
+
+Add a Workers AI binding rejection containing a safe error name, numeric code, HTTP status, and forbidden message/stack/content fields. Assert `attempt.failed` contains only the normalized name, finite numeric code, and valid status, and its serialized form excludes all forbidden fixture values. Add malformed metadata cases proving strings, objects, non-finite numbers, and invalid status values are omitted.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/answers/grounded-generators.test.ts`
+Expected: the safe diagnostic fields are absent because unknown Workers AI exceptions still become generic `network` failures.
+
+- [ ] **Step 3: Implement the minimum safe projection**
+
+Catch only the Workers AI binding rejection. Normalize `error.name` to a closed allowlist of platform error class names, accept only finite numeric `code`, and accept only integer HTTP `status` from 400 through 599. Throw a `GroundedProviderError` carrying those projected fields. Extend `attempt.failed` with these optional scalar fields; never retain or serialize the original exception.
+
+- [ ] **Step 4: Verify, commit, and deploy**
+
+Run focused tests, full tests, typecheck, and `npx.cmd wrangler deploy --dry-run`. Commit `chore: classify Workers AI binding failures safely`, deploy with `npx.cmd wrangler deploy`, then collect one production diagnostic attempt.

@@ -28,3 +28,7 @@
 ## Approved structured-output fallback addendum
 
 Production metadata confirmed both attempts still failed with `parse_invalid`: OpenRouter `nvidia/nemotron-3-ultra-550b-a55b:free`, then Workers AI `@cf/meta/llama-3.2-3b-instruct`. The current Workers AI fallback is therefore replaced with the Cloudflare JSON Mode-supported `@cf/meta/llama-3.1-8b-instruct-fast` and receives a strict `response_format` JSON Schema for exactly `{ answer, claims[] }` and `{ text, evidenceIds[] }`. OpenRouter remains first priority. The existing parser and every evidence validation gate remain mandatory even when the provider reports schema compliance.
+
+## Approved provider-diagnostic addendum
+
+Production metadata now isolates the terminal failure to the Workers AI binding, but the fallback layer currently collapses every unknown binding exception to `network`. Add a closed, metadata-only diagnostic projection for Workers AI exceptions. It may expose only a normalized error name, a finite numeric provider code, and a valid HTTP status; it must never expose the exception message, stack, prompt, question, answer, evidence, URL, provider payload, LINE identifiers, tokens, authorization values, or secrets. Diagnostic projection must not alter fallback order, response behavior, validation, storage, or publication.

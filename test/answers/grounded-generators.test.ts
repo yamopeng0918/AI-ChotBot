@@ -163,6 +163,25 @@ describe("FallbackGroundedGenerator", () => {
 });
 
 describe("WorkersAiGroundedGenerator", () => {
+  it("classifies a primitive string binding rejection without logging it", async () => {
+    const providerText = "JSON Mode couldn't be met: secret-primitive-detail";
+    const ai = { run: vi.fn().mockRejectedValue(providerText) };
+    const events: GroundedProviderEvent[] = [];
+    const chain = new FallbackGroundedGenerator([
+      {
+        provider: "workers_ai",
+        role: "terminal",
+        model: "@cf/meta/llama-3.1-8b-instruct-fast",
+        generator: new WorkersAiGroundedGenerator(ai),
+      },
+    ], (event) => events.push(event));
+
+    await expect(chain.generate([{ role: "user", content: "q" }])).rejects.toThrow();
+    const failure = events.find((event) => event.type === "attempt.failed");
+    expect(failure).toMatchObject({ reason: "network", diagnosticCategory: "json_mode_unmet" });
+    expect(JSON.stringify(failure)).not.toContain(providerText);
+  });
+
   it.each([
     ["JSON Mode couldn't be met: secret-json-detail", "json_mode_unmet"],
     ["No more data centers to forward the request: secret-capacity-detail", "capacity"],

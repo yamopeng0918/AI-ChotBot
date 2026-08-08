@@ -155,8 +155,11 @@ export class WorkersAiGroundedGenerator implements GroundedGenerator {
 }
 
 function workersAiDiagnosticCategory(error: unknown): WorkersAiDiagnosticCategory {
-  if (error === null || typeof error !== "object") return "unknown";
-  const message = safeMetadataValue(error, "message");
+  const message = typeof error === "string"
+    ? error
+    : error !== null && typeof error === "object"
+      ? safeMetadataValue(error, "message")
+      : undefined;
   if (typeof message !== "string") return "unknown";
 
   const normalized = message.toLowerCase();

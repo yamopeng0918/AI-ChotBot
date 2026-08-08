@@ -155,7 +155,7 @@ Run focused tests, full tests, typecheck, and `npx.cmd wrangler deploy --dry-run
 - Modify: `test/answers/grounded-generators.test.ts`
 
 **Interfaces:**
-- Consumes: an optional transient string from a rejected Workers AI exception's `message` property.
+- Consumes: an optional transient primitive string rejection or string from a rejected Workers AI exception's `message` property.
 - Produces: `diagnosticCategory: "json_mode_unmet" | "capacity" | "account_limited" | "invalid_model" | "bad_input" | "unknown"` on the existing sanitized failure event.
 
 - [ ] **Step 1: Write RED tests**
@@ -169,7 +169,7 @@ Expected: category assertions fail because opaque binding errors currently expos
 
 - [ ] **Step 3: Implement minimal closed classification**
 
-Read `message` through the existing fail-closed property accessor. Compare a lowercase in-memory value only against the documented phrases and immediately reduce it to the closed category. Carry only that category through `GroundedProviderError` and `attempt.failed`. Never store, spread, serialize, or log the message.
+Accept a primitive string rejection directly; otherwise read `message` through the existing fail-closed property accessor. Compare a lowercase in-memory value only against the documented phrases and immediately reduce it to the closed category. Carry only that category through `GroundedProviderError` and `attempt.failed`. Never store, spread, serialize, or log the message.
 
 - [ ] **Step 4: Verify, review, commit, and deploy**
 

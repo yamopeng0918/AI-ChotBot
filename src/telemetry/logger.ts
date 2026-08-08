@@ -109,6 +109,11 @@ type ForbiddenTelemetryKey =
   | "groupId"
   | "replyToken"
   | "authorization"
+  | "markdown"
+  | "url"
+  | "snippet"
+  | "token"
+  | "providerPayload"
   | "accessToken"
   | "secret"
   | "error";

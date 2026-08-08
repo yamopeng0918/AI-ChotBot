@@ -371,8 +371,12 @@ return {
     const startedAt = now();
     const operationId = crypto.randomUUID();
     emit({ event: "cron.cleanup.started", stage: "cron", outcome: "success", operationId });
-    try {
-      await questionsFor(env).purgeExpired(timestamp());
+    const cleanupAt = timestamp();
+    const results = await Promise.allSettled([
+      questionsFor(env).purgeExpired(cleanupAt),
+      draftReviewsFor(env).purgeExpired(cleanupAt),
+    ]);
+    if (results.every((result) => result.status === "fulfilled")) {
       emit({
         event: "cron.cleanup.completed",
         stage: "cron",
@@ -380,17 +384,17 @@ return {
         operationId,
         durationMs: durationMs(startedAt),
       });
-    } catch {
-      emit({
-        event: "cron.cleanup.failed",
-        stage: "cron",
-        outcome: "failed",
-        operationId,
-        errorType: "cron_cleanup_failed",
-        durationMs: durationMs(startedAt),
-      });
-      throw new Error("scheduled cleanup failed");
+      return;
     }
+    emit({
+      event: "cron.cleanup.failed",
+      stage: "cron",
+      outcome: "failed",
+      operationId,
+      errorType: "cron_cleanup_failed",
+      durationMs: durationMs(startedAt),
+    });
+    throw new Error("scheduled cleanup failed");
   },
 } satisfies ExportedHandler<Env, QuestionJob | IngestionJobMessage>;
 }

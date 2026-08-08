@@ -96,6 +96,43 @@ If you need to confirm the document still serves the prior version until publish
 npm run test:e2e:knowledge
 ```
 
+## Review web-answer knowledge drafts
+
+Validated web-grounded answers create **pending drafts only**. They are never published automatically. An administrator must review every draft's claims, source credibility, source dates, and copyright/licensing implications before approval. Reject cards that reproduce too much source text, use weak or conflicting sources, or could give unsafe running advice.
+
+Keep the admin token out of command arguments, console output, and PowerShell history. Set `ADMIN_API_TOKEN` outside this runbook's command session (for example through your approved secret manager), then build the header from the environment variable. Do not run `Write-Output`, `echo`, or history commands against the token:
+
+```powershell
+$workerHost = "https://<worker-host>"
+$adminHeaders = @{ Authorization = "Bearer $env:ADMIN_API_TOKEN" }
+```
+
+List pending drafts and inspect one complete card plus its HTTPS provenance before deciding:
+
+```powershell
+$pending = Invoke-RestMethod -Method Get -Uri "$workerHost/admin/knowledge/drafts?status=pending&limit=20" -Headers $adminHeaders
+$draftId = $pending.drafts[0].id
+$detail = Invoke-RestMethod -Method Get -Uri "$workerHost/admin/knowledge/drafts/$draftId" -Headers $adminHeaders
+$detail.draft | Select-Object id,status,topic,sources,createdAt,expiresAt
+```
+
+After human review, approve or reject exactly one draft:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "$workerHost/admin/knowledge/drafts/$draftId/approve" -Headers $adminHeaders
+Invoke-RestMethod -Method Post -Uri "$workerHost/admin/knowledge/drafts/$draftId/reject" -Headers $adminHeaders
+```
+
+Approval writes the reviewed Markdown to the existing R2/Queue ingestion pipeline. Check only operational status fields in D1, then inspect the existing ingestion Queue without printing content or credentials:
+
+```powershell
+npx.cmd wrangler d1 execute line-bot-diagnostics --remote --command "SELECT status,document_id,created_at,updated_at FROM knowledge_drafts WHERE id='$draftId'; SELECT status,active_version,created_at,updated_at FROM knowledge_documents ORDER BY created_at DESC LIMIT 1"
+npx.cmd wrangler queues info knowledge-ingestion-jobs
+npx.cmd wrangler queues info knowledge-ingestion-dlq
+```
+
+For the knowledge-first smoke, send the same ordinary running question to the configured LINE group twice: first create and approve its pending draft, wait until the document is `ready` and the ingestion Queue is drained, then send the identical question again. Confirm through sanitized telemetry that the second answer used knowledge evidence and did not call Tavily. The dedicated weather flow, administration commands, and greetings are not valid smoke questions for this fallback path.
+
 ## Delete smoke
 
 Use the admin API to delete the same document, then verify the tombstone path and cleanup queue:

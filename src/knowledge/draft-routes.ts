@@ -8,7 +8,7 @@ import type { KnowledgeDraft, KnowledgeDraftRepository, KnowledgeDraftStatus } f
 import type { KnowledgeObjectStore } from "./storage";
 import type { IngestionJobMessage } from "./types";
 
-export type KnowledgeDraftReviewRepository = Pick<KnowledgeDraftRepository, "list" | "get" | "approve" | "reject">;
+export type KnowledgeDraftReviewRepository = Pick<KnowledgeDraftRepository, "list" | "get" | "approve" | "reject" | "purgeExpired">;
 export type KnowledgeDraftRouteDependencies = {
   draftsFor: (env: Env) => KnowledgeDraftReviewRepository;
   knowledgeFor: (env: Env) => Pick<KnowledgeAdminRepository, "claimUpload" | "completeUpload" | "failUpload" | "clearUploadClaim">;

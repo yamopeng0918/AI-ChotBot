@@ -81,11 +81,15 @@ describe("createWorker repository injection", () => {
       purgeExpired: vi.fn().mockResolvedValue(2),
     };
     const factory = vi.fn(() => repository);
-    const worker = createWorker({ questions: factory, now: () => new Date("2026-07-18T12:34:56.000Z") });
+    const drafts = { list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(), purgeExpired: vi.fn() };
+    const draftFactory = vi.fn(() => drafts);
+    const worker = createWorker({ questions: factory, draftReviews: draftFactory, now: () => new Date("2026-07-18T12:34:56.000Z") });
     const env = {} as Env;
     await worker.scheduled({} as ScheduledController, env);
     expect(factory).toHaveBeenCalledWith(env);
     expect(repository.purgeExpired).toHaveBeenCalledWith("2026-07-18T12:34:56.000Z");
+    expect(draftFactory).toHaveBeenCalledWith(env);
+    expect(drafts.purgeExpired).toHaveBeenCalledWith("2026-07-18T12:34:56.000Z");
   });
 
   it("passes the fallback model through to the queue consumer answer service", async () => {
@@ -262,6 +266,7 @@ describe("cron telemetry", () => {
     };
     const worker = createWorker({
       questions: repository,
+      draftReviews: { list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(), purgeExpired: vi.fn() },
       logger: { emit: (event) => events.push(event) },
       now: () => now,
     });
@@ -293,6 +298,7 @@ describe("cron telemetry", () => {
     };
     const worker = createWorker({
       questions: repository,
+      draftReviews: { list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(), purgeExpired: vi.fn() },
       logger: { emit: (event) => events.push(event) },
       now: () => now,
     });
@@ -307,6 +313,24 @@ describe("cron telemetry", () => {
       durationMs: 125,
     });
     expect(JSON.stringify(events)).not.toContain("credentials=secret");
+  });
+
+  it("attempts draft cleanup after question cleanup fails", async () => {
+    const questions = {
+      claim: vi.fn(), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(),
+      purgeExpired: vi.fn().mockRejectedValue(new Error("question secret")),
+    };
+    const drafts = {
+      list: vi.fn(), get: vi.fn(), approve: vi.fn(), reject: vi.fn(),
+      purgeExpired: vi.fn().mockRejectedValue(new Error("draft secret")),
+    };
+    const events: TelemetryEvent[] = [];
+    const worker = createWorker({ questions, draftReviews: drafts, logger: { emit: (event) => events.push(event) } });
+
+    await expect(worker.scheduled({} as ScheduledController, {} as Env)).rejects.toThrow("scheduled cleanup failed");
+    expect(questions.purgeExpired).toHaveBeenCalledOnce();
+    expect(drafts.purgeExpired).toHaveBeenCalledOnce();
+    expect(JSON.stringify(events)).not.toContain("secret");
   });
 });
 

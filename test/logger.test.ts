@@ -10,6 +10,11 @@ type ForbiddenTelemetryKey =
   | "groupId"
   | "replyToken"
   | "authorization"
+  | "markdown"
+  | "url"
+  | "snippet"
+  | "token"
+  | "providerPayload"
   | "accessToken"
   | "secret"
   | "error";
@@ -128,6 +133,23 @@ describe("structured telemetry logger", () => {
       outcome: "success",
       timestamp: "2026-07-25T10:00:00.000Z",
       webhookEventId: "event-1",
+    });
+  });
+
+  it("projects draft telemetry to metadata only", () => {
+    const write = vi.fn();
+    const logger = createConsoleTelemetryLogger(write);
+    logger.emit({
+      event: "knowledge_draft.create", outcome: "success", sourceCount: 1,
+      timestamp: "2026-07-25T10:00:00.000Z",
+      question: "private", answer: "private", markdown: "# private",
+      url: "https://private.example", snippet: "private", authorization: "Bearer private",
+      token: "private", providerPayload: { private: true },
+    } as unknown as TelemetryEvent);
+
+    expect(write).toHaveBeenCalledWith({
+      event: "knowledge_draft.create", outcome: "success", sourceCount: 1,
+      timestamp: "2026-07-25T10:00:00.000Z",
     });
   });
 

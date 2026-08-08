@@ -6,6 +6,7 @@ import claimMigration from "../../migrations/0003_upload_claim_fencing.sql?raw";
 import urlSnapshotMigration from "../../migrations/0004_url_snapshots.sql?raw";
 import lifecycleMigration from "../../migrations/0005_ingestion_lifecycle.sql?raw";
 import segmentMigration from "../../migrations/0006_knowledge_chunk_segments.sql?raw";
+import draftMigration from "../../migrations/0007_knowledge_drafts.sql?raw";
 import questionsMigration from "../../migrations/0001_questions.sql?raw";
 import type { Env } from "../../src/config";
 import { createWorker } from "../../src/index";
@@ -46,7 +47,7 @@ function lineWebhook(overrides: {
 }
 
 async function applyMigrations(db: D1Database): Promise<void> {
-  for (const sql of [questionsMigration, knowledgeMigration, claimMigration, urlSnapshotMigration, lifecycleMigration, segmentMigration]) {
+  for (const sql of [questionsMigration, knowledgeMigration, claimMigration, urlSnapshotMigration, lifecycleMigration, segmentMigration, draftMigration]) {
     await db.batch(sql.split(";").map((statement) => statement.trim()).filter(Boolean).map((statement) => db.prepare(statement)));
   }
 }
@@ -360,9 +361,9 @@ describe("knowledge search end-to-end harness", () => {
     webSearch.search.mockResolvedValue([{
       id: "web-1",
       sourceType: "web" as const,
-      title: "Weather Bulletin",
-      url: "https://weather.example/taipei",
-      text: "Tomorrow will be dry and mild.",
+      title: "Running Recovery Guide",
+      url: "https://example.gov/running/recovery",
+      text: "Reduce training load and rebuild gradually.",
       pageNumber: null,
       sectionPath: null,
       paragraphIndex: 0,
@@ -370,29 +371,79 @@ describe("knowledge search end-to-end harness", () => {
       score: 0.4,
     }]);
     groundedAnswerService.answer.mockResolvedValue({
-      text: "Tomorrow will be dry and mild.\n\nSources:\n[1] Weather Bulletin ??paragraph 1 ??https://weather.example/taipei",
-      citations: ["[1] Weather Bulletin ??paragraph 1 ??https://weather.example/taipei"],
+      text: "Reduce training load and rebuild gradually.\n\nSources:\n[1] Running Recovery Guide ??paragraph 1 ??https://example.gov/running/recovery",
+      citations: ["[1] Running Recovery Guide ??paragraph 1 ??https://example.gov/running/recovery"],
       model: "grounded-model",
       usedEvidenceIds: ["web-1"],
+      validatedClaims: [{ text: "Reduce training load and rebuild gradually.", evidenceIds: ["web-1"] }],
     });
 
     const webhook = lineWebhook({
       webhookEventId: "event-e2e-web",
       messageId: "message-web",
       replyToken: "reply-web",
-      text: "@running-bot What's the weather tomorrow in Taipei?",
+      text: "@running-bot How should I return to running after injury?",
     });
     expect((await deliver(worker, env, webhook)).status).toBe(200);
     expect(questionJobs).toHaveLength(1);
 
     await worker.queue!(questionBatch(questionJobs), env, {} as ExecutionContext);
-    expect(retriever.retrieve).toHaveBeenCalledWith("@running-bot What's the weather tomorrow in Taipei?", 8);
-    expect(webSearch.search).toHaveBeenCalledWith("@running-bot What's the weather tomorrow in Taipei?");
+    expect(retriever.retrieve).toHaveBeenCalledWith("@running-bot How should I return to running after injury?", 8);
+    expect(webSearch.search).toHaveBeenCalledWith("@running-bot How should I return to running after injury?");
     expect(groundedAnswerService.answer).toHaveBeenCalledWith(expect.objectContaining({
-      evidence: expect.arrayContaining([expect.objectContaining({ sourceType: "web", title: "Weather Bulletin" })]),
+      evidence: expect.arrayContaining([expect.objectContaining({ sourceType: "web", title: "Running Recovery Guide" })]),
       webUnavailable: false,
     }));
-    expect(lineReplies).toEqual([{ replyToken: "reply-web", messages: [{ type: "text", text: "Tomorrow will be dry and mild.\n\nSources:\n[1] Weather Bulletin ??paragraph 1 ??https://weather.example/taipei" }] }]);
+    expect(lineReplies).toEqual([{ replyToken: "reply-web", messages: [{ type: "text", text: "Reduce training load and rebuild gradually.\n\nSources:\n[1] Running Recovery Guide ??paragraph 1 ??https://example.gov/running/recovery" }] }]);
+  });
+
+  it("reviews a validated web draft into knowledge used by the same question", async () => {
+    const { worker, env, questionJobs, ingestionJobs, retriever, webSearch, groundedAnswerService } = fixture();
+    const webEvidence = {
+      id: "web:run", sourceType: "web" as const, title: "Official Running Guide",
+      url: "https://example.gov/running/recovery", text: "Reduce training load and rebuild gradually.",
+      pageNumber: null, sectionPath: null, paragraphIndex: 0, retrievedAt: now.toISOString(), score: 0.9,
+    };
+    const knowledgeEvidence = {
+      ...webEvidence, id: "kb:run", sourceType: "knowledge" as const, url: null, title: "Recovery card", score: 0.95,
+    };
+    retriever.retrieve
+      .mockResolvedValueOnce({ evidence: [], insufficient: true, topScore: null })
+      .mockResolvedValueOnce({ evidence: [knowledgeEvidence], insufficient: false, topScore: 0.95 });
+    webSearch.search.mockResolvedValue([webEvidence]);
+    groundedAnswerService.answer
+      .mockResolvedValueOnce({
+        text: "Reduce training load and rebuild gradually.\n\nSources:\n[1] Official Running Guide — https://example.gov/running/recovery",
+        citations: ["[1] Official Running Guide — https://example.gov/running/recovery"], model: "grounded-model",
+        usedEvidenceIds: [webEvidence.id], validatedClaims: [{ text: "Reduce training load and rebuild gradually.", evidenceIds: [webEvidence.id] }],
+      })
+      .mockResolvedValueOnce({
+        text: "Reduce training load and rebuild gradually.\n\nSources:\n[1] Recovery card",
+        citations: ["[1] Recovery card"], model: "grounded-model",
+        usedEvidenceIds: [knowledgeEvidence.id], validatedClaims: [{ text: "Reduce training load and rebuild gradually.", evidenceIds: [knowledgeEvidence.id] }],
+      });
+    const text = "@running-bot How should I return to running after injury?";
+    const first = lineWebhook({ webhookEventId: "event-draft-first", messageId: "message-draft-first", replyToken: "reply-draft-first", text });
+    expect((await deliver(worker, env, first)).status).toBe(200);
+    await worker.queue!(questionBatch([questionJobs.shift()!]), env, {} as ExecutionContext);
+
+    const pending = await db.prepare("SELECT id,status FROM knowledge_drafts").first<{ id: string; status: string }>();
+    expect(pending).toEqual({ id: expect.any(String), status: "pending" });
+    const approved = await fetchMf.dispatchFetch(`https://worker.test/admin/knowledge/drafts/${pending!.id}/approve`, {
+      method: "POST", headers: { authorization: "Bearer admin-secret" },
+    });
+    expect(approved.status).toBe(202);
+    expect(ingestionJobs).toHaveLength(1);
+    await worker.queue!(ingestionBatch(ingestionJobs.shift()!), env, {} as ExecutionContext);
+    const document = await db.prepare("SELECT status FROM knowledge_documents").first<{ status: string }>();
+    expect(document?.status).toBe("ready");
+
+    const second = lineWebhook({ webhookEventId: "event-draft-second", messageId: "message-draft-second", replyToken: "reply-draft-second", text });
+    expect((await deliver(worker, env, second)).status).toBe(200);
+    await worker.queue!(questionBatch([questionJobs.shift()!]), env, {} as ExecutionContext);
+    expect(webSearch.search).toHaveBeenCalledTimes(1);
+    expect(retriever.retrieve).toHaveBeenCalledTimes(2);
+    expect(groundedAnswerService.answer).toHaveBeenLastCalledWith(expect.objectContaining({ evidence: [knowledgeEvidence] }));
   });
 
   it("reindexes through the real worker while keeping the old version searchable until publish", async () => {

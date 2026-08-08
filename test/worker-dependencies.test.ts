@@ -35,7 +35,7 @@ describe("createWorker repository injection", () => {
     const repository = { claim: vi.fn().mockResolvedValue({ state: "claimed", leaseToken: "lease", leaseUntil: "2026-07-18T00:01:00.000Z", createdAt: job.receivedAt, expiresAt: "2026-08-18T00:00:00.000Z" }), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(), purgeExpired: vi.fn() };
     const evidence = { id: "kb", sourceType: "knowledge", title: "Guide", url: null, text: "Answer.", pageNumber: 1, sectionPath: null, paragraphIndex: null, retrievedAt: "now", score: .9 } as const;
     const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [evidence], insufficient: false, topScore: .9 }) };
-    const webSearch = { search: vi.fn() }; const grounded = { answer: vi.fn().mockResolvedValue({ text: "Grounded", model: "m", citations: [], usedEvidenceIds: ["kb"] }) };
+    const webSearch = { search: vi.fn() }; const grounded = { answer: vi.fn().mockResolvedValue({ text: "Grounded", model: "m", citations: [], usedEvidenceIds: ["kb"], validatedClaims: [] }) };
     const retrieverFactory = vi.fn(() => retriever), webFactory = vi.fn(() => webSearch), groundedFactory = vi.fn(() => grounded);
     const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).includes("api.line.me")
       ? new Response(null, { status: 200 })

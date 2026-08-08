@@ -2,11 +2,11 @@ import type { KnowledgeEvidence } from "../knowledge/types";
 import type { GroundedGenerator, GroundedMessage } from "./grounded-generators";
 
 export const INSUFFICIENT_EVIDENCE_TEXT = "I don't have enough reliable evidence to answer that.";
-export type GroundedAnswer = { text: string; citations: string[]; model: string | null; usedEvidenceIds: string[] };
+export type GroundedClaim = { text: string; evidenceIds: string[] };
+export type GroundedAnswer = { text: string; citations: string[]; model: string | null; usedEvidenceIds: string[]; validatedClaims: GroundedClaim[] };
 export type GroundedAnswerRequest = { question: string; evidence: KnowledgeEvidence[]; webUnavailable: boolean };
 export type EntailmentChecker = (claim: string, citedEvidenceText: string) => Promise<boolean>;
-type Claim = { text: string; evidenceIds: string[] };
-type Parsed = { answer: string; claims: Claim[] };
+type Parsed = { answer: string; claims: GroundedClaim[] };
 
 export async function strictEntailment(claim: string, evidence: string): Promise<boolean> {
   const expected = semanticText(claim);
@@ -44,7 +44,7 @@ function prompt(request: GroundedAnswerRequest): string {
 function parse(raw: string): Parsed | null {
   try {
     const value: unknown = JSON.parse(raw); if (!record(value) || Object.keys(value).sort().join() !== "answer,claims" || typeof value.answer !== "string" || !value.answer.trim() || !Array.isArray(value.claims) || !value.claims.length) return null;
-    const claims: Claim[] = [];
+    const claims: GroundedClaim[] = [];
     for (const item of value.claims) {
       if (!record(item) || Object.keys(item).sort().join() !== "evidenceIds,text" || typeof item.text !== "string" || !item.text.trim() || !Array.isArray(item.evidenceIds) || !item.evidenceIds.every((id) => typeof id === "string")) return null;
       claims.push({ text: item.text.trim(), evidenceIds: item.evidenceIds });
@@ -70,7 +70,7 @@ function conflictingEvidence(evidence: KnowledgeEvidence[]): boolean {
   const facts = evidence.map((item) => factValues(item.text));
   return conflictingSets(facts.map((x) => x.dates)) || conflictingSets(facts.map((x) => x.numbers)) || conflictingSets(facts.map((x) => x.status));
 }
-function crossClaimConflict(claims: Claim[], evidence: KnowledgeEvidence[][]): boolean {
+function crossClaimConflict(claims: GroundedClaim[], evidence: KnowledgeEvidence[][]): boolean {
   for (let left = 0; left < claims.length; left++) for (let right = left + 1; right < claims.length; right++) {
     const a = factValues(claims[left]!.text), b = factValues(claims[right]!.text);
     const statusConflict = different(a.status, b.status);
@@ -87,7 +87,7 @@ function render(parsed: Parsed, evidence: KnowledgeEvidence[], model: string): G
   const byId = new Map(evidence.map((item) => [item.id, item])), usedEvidenceIds: string[] = [];
   for (const claim of parsed.claims) for (const id of claim.evidenceIds) if (!usedEvidenceIds.includes(id)) usedEvidenceIds.push(id);
   const citations = usedEvidenceIds.map((id, index) => citation(index + 1, byId.get(id)!));
-  return { text: `${plain(parsed.answer)}\n\nSources:\n${citations.join("\n")}`, citations, model, usedEvidenceIds };
+  return { text: `${plain(parsed.answer)}\n\nSources:\n${citations.join("\n")}`, citations, model, usedEvidenceIds, validatedClaims: parsed.claims.map((claim) => ({ text: claim.text, evidenceIds: [...claim.evidenceIds] })) };
 }
 function citation(index: number, item: KnowledgeEvidence): string {
   const locations: string[] = [];
@@ -102,7 +102,7 @@ function renderableLocation(item: KnowledgeEvidence): boolean {
   if (item.url === null) return item.pageNumber !== null || Boolean(item.sectionPath?.trim());
   return safeHttps(item.url) && (item.paragraphIndex !== null || Boolean(item.sectionPath?.trim()));
 }
-function fallback(model: string | null): GroundedAnswer { return { text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model, usedEvidenceIds: [] }; }
+function fallback(model: string | null): GroundedAnswer { return { text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model, usedEvidenceIds: [], validatedClaims: [] }; }
 function normalize(value: string): string { return value.replace(/\s+/g, " ").trim(); }
 function plain(value: string): string { return value.replace(/[\r\n\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim(); }
 function safeHttps(value: string): boolean { try { return new URL(value).protocol === "https:"; } catch { return false; } }

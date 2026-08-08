@@ -573,7 +573,7 @@ describe("processQuestion", () => {
     const d = deps(); const kb = { id: "kb", sourceType: "knowledge", title: "Guide", url: null, text: "Run at six.", pageNumber: 1, sectionPath: null, paragraphIndex: null, retrievedAt: "now", score: .9 } as const;
     const web = { ...kb, id: "web:1", sourceType: "web", url: "https://example.com" } as const;
     const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [kb], insufficient: false, topScore: .9 }) };
-    const webSearch = { search: vi.fn().mockResolvedValue([web]) }; const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "Grounded", model: "grounded-model", citations: [], usedEvidenceIds: ["kb"] }) };
+    const webSearch = { search: vi.fn().mockResolvedValue([web]) }; const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "Grounded", model: "grounded-model", citations: [], usedEvidenceIds: ["kb"], validatedClaims: [] }) };
     await processQuestion({ ...job, text: "search online for run time" }, { ...d, retriever, webSearch, groundedAnswerService });
     expect(retriever.retrieve).toHaveBeenCalledWith("search online for run time", 8); expect(webSearch.search).toHaveBeenCalledWith("search online for run time");
     expect(groundedAnswerService.answer).toHaveBeenCalledWith({ question: "search online for run time", evidence: [kb, web], webUnavailable: false });
@@ -584,7 +584,7 @@ describe("processQuestion", () => {
 
   it("degrades web failure to KB evidence and marks web unavailable", async () => {
     const d = deps(); const kb = { id: "kb", sourceType: "knowledge", title: "Guide", url: null, text: "Run at six.", pageNumber: 1, sectionPath: null, paragraphIndex: null, retrievedAt: "now", score: .9 } as const;
-    const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "KB answer", model: "m", citations: [], usedEvidenceIds: ["kb"] }) };
+    const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "KB answer", model: "m", citations: [], usedEvidenceIds: ["kb"], validatedClaims: [] }) };
     await processQuestion({ ...job, text: "search online for run time" }, { ...d, retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [kb], insufficient: false, topScore: .9 }) }, webSearch: { search: vi.fn().mockRejectedValue(new Error("down")) }, groundedAnswerService });
     expect(groundedAnswerService.answer).toHaveBeenCalledWith(expect.objectContaining({ evidence: [kb], webUnavailable: true }));
   });

@@ -107,7 +107,7 @@ describe("GroundedAnswerService", () => {
     const generate = vi.fn().mockResolvedValue({ text: valid, model: "provider/model" });
     const entail = vi.fn().mockResolvedValue(true);
     const answer = await new GroundedAnswerService({ generate }, entail).answer({ question: "When and where?", evidence: [file, page, web], webUnavailable: false });
-    expect(answer).toEqual({ text: "Hydrate every 20 minutes. Meet at 6 AM. Rain begins at noon.\n\nSources:\n[1] Runner Guide — p. 3 — Safety > Water\n[2] Club FAQ — paragraph 5 — https://club.example/faq\n[3] Weather — Forecast — https://weather.example/today", citations: ["[1] Runner Guide — p. 3 — Safety > Water", "[2] Club FAQ — paragraph 5 — https://club.example/faq", "[3] Weather — Forecast — https://weather.example/today"], model: "provider/model", usedEvidenceIds: ["kb-1", "kb-2", "web:1"] });
+    expect(answer).toEqual({ text: "Hydrate every 20 minutes. Meet at 6 AM. Rain begins at noon.\n\nSources:\n[1] Runner Guide — p. 3 — Safety > Water\n[2] Club FAQ — paragraph 5 — https://club.example/faq\n[3] Weather — Forecast — https://weather.example/today", citations: ["[1] Runner Guide — p. 3 — Safety > Water", "[2] Club FAQ — paragraph 5 — https://club.example/faq", "[3] Weather — Forecast — https://weather.example/today"], model: "provider/model", usedEvidenceIds: ["kb-1", "kb-2", "web:1"], validatedClaims: JSON.parse(valid).claims });
     expect(entail).toHaveBeenCalledWith("Hydrate every 20 minutes.", "Hydrate every 20 minutes.");
   });
 
@@ -132,13 +132,13 @@ describe("GroundedAnswerService", () => {
     const answer = await new GroundedAnswerService({ generate }, entail).answer({ question: "factual?", evidence, webUnavailable: false });
     expect(generate).toHaveBeenCalledTimes(2);
     expect(generate.mock.calls[1]![0][2].content).toContain("correct");
-    expect(answer).toEqual({ text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model: "second", usedEvidenceIds: [] });
+    expect(answer).toEqual({ text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model: "second", usedEvidenceIds: [], validatedClaims: [] });
   });
 
   it("fails closed without evidence and never calls the model", async () => {
     const generate = vi.fn();
     await expect(new GroundedAnswerService({ generate }, async () => true).answer({ question: "What time?", evidence: [], webUnavailable: true }))
-      .resolves.toEqual({ text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model: null, usedEvidenceIds: [] });
+      .resolves.toEqual({ text: INSUFFICIENT_EVIDENCE_TEXT, citations: [], model: null, usedEvidenceIds: [], validatedClaims: [] });
     expect(generate).not.toHaveBeenCalled();
   });
 

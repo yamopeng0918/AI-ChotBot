@@ -163,6 +163,33 @@ describe("FallbackGroundedGenerator", () => {
 });
 
 describe("WorkersAiGroundedGenerator", () => {
+  it.each([
+    ["JSON Mode couldn't be met: secret-json-detail", "json_mode_unmet"],
+    ["No more data centers to forward the request: secret-capacity-detail", "capacity"],
+    ["You have used up your daily free allocation: secret-account-detail", "account_limited"],
+    ["No such model: secret-model-detail", "invalid_model"],
+    ["The model name is invalid: secret-model-detail", "invalid_model"],
+    ["BadInput: secret-input-detail", "bad_input"],
+    ["Request is missing headers or body: secret-input-detail", "bad_input"],
+    ["Unrecognized provider failure: secret-unknown-detail", "unknown"],
+  ])("classifies an opaque binding error without logging its message: %s", async (message, diagnosticCategory) => {
+    const ai = { run: vi.fn().mockRejectedValue(new Error(message)) };
+    const events: GroundedProviderEvent[] = [];
+    const chain = new FallbackGroundedGenerator([
+      {
+        provider: "workers_ai",
+        role: "terminal",
+        model: "@cf/meta/llama-3.1-8b-instruct-fast",
+        generator: new WorkersAiGroundedGenerator(ai),
+      },
+    ], (event) => events.push(event));
+
+    await expect(chain.generate([{ role: "user", content: "q" }])).rejects.toThrow();
+    const failure = events.find((event) => event.type === "attempt.failed");
+    expect(failure).toMatchObject({ reason: "network", diagnosticCategory });
+    expect(JSON.stringify(failure)).not.toContain(message);
+  });
+
   it("projects only allowlisted binding error metadata into provider telemetry", async () => {
     const bindingError = Object.assign(new Error("secret-provider-message"), {
       name: "InferenceUpstreamError",
@@ -223,9 +250,16 @@ describe("WorkersAiGroundedGenerator", () => {
   });
 
   it("fails closed when binding error metadata accessors throw", async () => {
-    const bindingError = Object.defineProperty({}, "name", {
-      get() {
-        throw new Error("secret-accessor-message");
+    const bindingError = Object.defineProperties({}, {
+      name: {
+        get() {
+          throw new Error("secret-name-accessor-message");
+        },
+      },
+      message: {
+        get() {
+          throw new Error("secret-message-accessor-message");
+        },
       },
     });
     const ai = { run: vi.fn().mockRejectedValue(bindingError) };
@@ -234,8 +268,9 @@ describe("WorkersAiGroundedGenerator", () => {
     await expect(rejection).rejects.toMatchObject({
       name: "GroundedProviderError",
       reason: "network",
+      diagnosticCategory: "unknown",
     });
-    await expect(rejection).rejects.not.toThrow("secret-accessor-message");
+    await expect(rejection).rejects.not.toThrow(/secret-(name|message)-accessor-message/);
   });
 
   it("accepts a plain string response", async () => {

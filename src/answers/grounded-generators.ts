@@ -5,12 +5,20 @@ export interface GroundedGenerator {
 }
 
 export type GroundedProviderFailureReason = "http" | "timeout" | "network" | "malformed";
+export type WorkersAiDiagnosticCategory =
+  | "json_mode_unmet"
+  | "capacity"
+  | "account_limited"
+  | "invalid_model"
+  | "bad_input"
+  | "unknown";
 export class GroundedProviderError extends Error {
   constructor(
     readonly reason: GroundedProviderFailureReason,
     readonly status?: number,
     readonly errorName?: "InferenceUpstreamError" | "AiInternalError",
     readonly code?: number,
+    readonly diagnosticCategory?: WorkersAiDiagnosticCategory,
   ) {
     super(reason);
     this.name = "GroundedProviderError";
@@ -28,6 +36,7 @@ export type GroundedProviderEvent = {
   status?: number;
   errorName?: "InferenceUpstreamError" | "AiInternalError";
   code?: number;
+  diagnosticCategory?: WorkersAiDiagnosticCategory;
 };
 
 export type GroundedGeneratorEntry = {
@@ -130,12 +139,33 @@ export class WorkersAiGroundedGenerator implements GroundedGenerator {
       });
     } catch (error) {
       const metadata = workersAiErrorMetadata(error);
-      throw new GroundedProviderError("network", metadata.status, metadata.errorName, metadata.code);
+      const diagnosticCategory = workersAiDiagnosticCategory(error);
+      throw new GroundedProviderError(
+        "network",
+        metadata.status,
+        metadata.errorName,
+        metadata.code,
+        diagnosticCategory,
+      );
     }
     const text = workersAiResponseText(payload);
     if (!text) throw new GroundedProviderError("malformed");
     return { text, model: this.model };
   }
+}
+
+function workersAiDiagnosticCategory(error: unknown): WorkersAiDiagnosticCategory {
+  if (error === null || typeof error !== "object") return "unknown";
+  const message = safeMetadataValue(error, "message");
+  if (typeof message !== "string") return "unknown";
+
+  const normalized = message.toLowerCase();
+  if (normalized.includes("json mode couldn't be met")) return "json_mode_unmet";
+  if (normalized.includes("no more data centers to forward the request")) return "capacity";
+  if (normalized.includes("used up your daily free allocation")) return "account_limited";
+  if (normalized.includes("no such model") || normalized.includes("model name is invalid")) return "invalid_model";
+  if (normalized.includes("badinput") || normalized.includes("request is missing")) return "bad_input";
+  return "unknown";
 }
 
 function workersAiErrorMetadata(error: unknown): {
@@ -157,7 +187,7 @@ function workersAiErrorMetadata(error: unknown): {
   };
 }
 
-function safeMetadataValue(error: object, key: "name" | "code" | "status"): unknown {
+function safeMetadataValue(error: object, key: "name" | "code" | "status" | "message"): unknown {
   try {
     return Reflect.get(error, key);
   } catch {
@@ -226,6 +256,9 @@ export class FallbackGroundedGenerator implements GroundedGenerator {
               ...(error.status === undefined ? {} : { status: error.status }),
               ...(error.errorName === undefined ? {} : { errorName: error.errorName }),
               ...(error.code === undefined ? {} : { code: error.code }),
+              ...(error.diagnosticCategory === undefined
+                ? {}
+                : { diagnosticCategory: error.diagnosticCategory }),
             }
           : { reason: "network" as const };
         this.notify({

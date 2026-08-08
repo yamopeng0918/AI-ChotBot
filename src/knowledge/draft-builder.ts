@@ -5,6 +5,7 @@ import type { KnowledgeEvidence } from "./types";
 export type BuiltKnowledgeDraft = CreateKnowledgeDraftInput;
 
 const TOPIC_LIMIT = 120;
+const MARKDOWN_LIMIT = 65_536;
 const DRAFT_LIFETIME_MS = 90 * 24 * 60 * 60 * 1000;
 
 /**
@@ -27,6 +28,8 @@ export async function buildKnowledgeDraft(
 
   const sources = canonicalSources(sourcesById.values());
   if (!sources.length) return null;
+  const markdown = renderMarkdown(topic, claims, sources);
+  if (markdown.length > MARKDOWN_LIMIT) return null;
   const urls = sources.map((source) => source.url);
   const normalizedTopic = normalize(topic);
   const dedupeKey = await sha256(`${normalizedTopic}\n${urls.join("\n")}`);
@@ -37,7 +40,7 @@ export async function buildKnowledgeDraft(
   return {
     id: stableUuid(dedupeKey),
     topic,
-    markdown: renderMarkdown(topic, claims, sources),
+    markdown,
     sources,
     dedupeKey,
     createdAt,
@@ -92,9 +95,9 @@ function topicFor(value: string): string {
 }
 
 function renderMarkdown(topic: string, claims: GroundedClaim[], sources: KnowledgeDraftSource[]): string {
-  const keyPoints = claims.map((claim) => `- ${claim.text}`).join("\n");
-  const references = sources.map((source) => `- [${markdownText(source.title)}](${source.url})（擷取時間：${source.retrievedAt}）`).join("\n");
-  return `# ${topic}\n\n> 本草稿僅根據已驗證的網頁來源整理，待管理員審核後才會發布。\n\n## 重點整理\n\n${keyPoints}\n\n## 使用提醒\n\n內容僅供一般跑步資訊參考，請依個人狀況調整；若有疼痛、受傷或其他健康疑慮，請諮詢醫療專業人員。\n\n## 來源\n\n${references}\n`;
+  const keyPoints = claims.map((claim) => `- ${markdownText(claim.text)}`).join("\n");
+  const references = sources.map((source) => `- ${markdownText(source.title)}：${markdownText(source.url)}（擷取時間：${source.retrievedAt}）`).join("\n");
+  return `# ${markdownText(topic)}\n\n> 本草稿僅根據已驗證的網頁來源整理，待管理員審核後才會發布。\n\n## 重點整理\n\n${keyPoints}\n\n## 使用提醒\n\n內容僅供一般跑步資訊參考，請依個人狀況調整；若有疼痛、受傷或其他健康疑慮，請諮詢醫療專業人員。\n\n## 來源\n\n${references}\n`;
 }
 
 async function sha256(value: string): Promise<string> {
@@ -114,7 +117,9 @@ function canonicalHttpsUrl(value: string | null): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname ? url.toString() : null;
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return null;
+    url.hash = "";
+    return url.toString().replace(/\/$/, url.pathname === "/" ? "" : "/");
   } catch {
     return null;
   }
@@ -130,7 +135,12 @@ function plain(value: string): string {
 }
 
 function markdownText(value: string): string {
-  return value.replace(/[\\[\]]/g, "\\$&");
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\\/g, "\\\\")
+    .replace(/[`*_{}\[\]()#+\-.!|]/g, "\\$&");
 }
 
 function normalize(value: string): string {

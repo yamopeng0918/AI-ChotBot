@@ -63,6 +63,43 @@ describe("buildKnowledgeDraft", () => {
     expect(built?.markdown).not.toContain("未使用來源");
   });
 
+  test("canonicalizes fragment variants and rejects credential-bearing sources without persisting credentials", async () => {
+    const fragment = { ...web, id: "web:2", url: "https://EXAMPLE.gov/run#section" };
+    const built = await buildKnowledgeDraft(answer({
+      usedEvidenceIds: ["web:1", "web:2"],
+      validatedClaims: [{ text: "跑前應循序暖身。", evidenceIds: ["web:1", "web:2"] }],
+    }), [{ ...web, url: "https://example.gov/run#overview" }, fragment], now);
+
+    expect(built?.sources).toEqual([{ title: "官方跑步指南", url: "https://example.gov/run", retrievedAt: "2026-08-07T12:00:00.000Z" }]);
+    expect(built?.markdown).not.toContain("#overview");
+    expect(built?.markdown).not.toContain("#section");
+    await expect(buildKnowledgeDraft(answer(), [{ ...web, url: "https://user:password@example.gov/run" }], now)).resolves.toBeNull();
+  });
+
+  test("renders hostile claims and source metadata as escaped text, never Markdown links or HTML", async () => {
+    const hostile = {
+      ...web,
+      title: "<img src=x> [source](https://attacker.example)",
+      url: "https://example.gov/run)",
+    };
+    const built = await buildKnowledgeDraft(answer({
+      validatedClaims: [{ text: "# 偽標題 ![image](https://attacker.example) <script>alert(1)</script>", evidenceIds: ["web:1"] }],
+    }), [hostile], now);
+
+    expect(built?.markdown).toContain("\\# 偽標題");
+    expect(built?.markdown).toContain("&lt;script&gt;");
+    expect(built?.markdown).not.toContain("![image](https://attacker.example)");
+    expect(built?.markdown).not.toContain("<img src=x>");
+    expect(built?.markdown).not.toContain("[source](https://attacker.example)");
+    expect(built?.markdown).not.toContain("](https://");
+  });
+
+  test("fails closed when the fixed card template cannot fit the draft Markdown limit", async () => {
+    await expect(buildKnowledgeDraft(answer({
+      validatedClaims: [{ text: "跑".repeat(65_536), evidenceIds: ["web:1"] }],
+    }), [web], now)).resolves.toBeNull();
+  });
+
   test("bounds the topic by Unicode code points and keeps dedupe stable across evidence order", async () => {
     const longTopic = "跑".repeat(122);
     const second = { ...web, id: "web:2", title: "第二來源", url: "https://example.gov/second" };

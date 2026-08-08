@@ -345,14 +345,12 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
         useKnowledgeAnswering
           ? await orchestratedAnswer(job.text, dependencies)
           : {
-              answer: isCasual
-                ? await dependencies.answerService.answer({ question: job.text, locale: "zh-TW" })
-                : await selectedService.answer({
-                    question: job.text,
-                    locale: "zh-TW",
-                    groupId: job.groupId,
-                    defaultLocation,
-                  }, observeProvider),
+              answer: await selectedService.answer({
+                question: job.text,
+                locale: "zh-TW",
+                groupId: job.groupId,
+                defaultLocation,
+              }, observeProvider),
               evidence: [],
             };
       const answer = orchestrated.answer;

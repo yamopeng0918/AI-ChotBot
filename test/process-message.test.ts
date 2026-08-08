@@ -677,7 +677,12 @@ describe("processQuestion", () => {
   });
 
   it("keeps casual greetings out of retrieval, web search, grounding, and drafts", async () => {
-    const d = deps();
+    const events: TelemetryEvent[] = [];
+    const d = { ...deps(), logger: { emit: (event: TelemetryEvent) => events.push(event) } };
+    d.answerService.answer.mockImplementation(async (_request, observe) => {
+      observe?.({ type: "attempt.started", provider: "workers_ai", role: "primary", model: "casual-model" });
+      return { text: "Try the riverside.", model: "casual-model" };
+    });
     const web = { id: "web:run", sourceType: "web", title: "Official run guide", url: "https://example.gov/run", text: "The route opens at six.", pageNumber: null, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
     const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) };
     const webSearch = { search: vi.fn().mockResolvedValue([web]) };
@@ -687,7 +692,12 @@ describe("processQuestion", () => {
     await expect(processQuestion({ ...job, text: "hello!" }, { ...d, retriever, webSearch, groundedAnswerService, knowledgeDrafts }))
       .resolves.toEqual({ disposition: "ack", status: "answered" });
 
-    expect(d.answerService.answer).toHaveBeenCalledWith({ question: "hello!", locale: "zh-TW" });
+    expect(d.answerService.answer).toHaveBeenCalledWith({
+      question: "hello!", locale: "zh-TW", groupId: job.groupId, defaultLocation: null,
+    }, expect.any(Function));
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({
+      event: "answer.ai.attempt.started", model: "casual-model", detail: "primary_model",
+    })]));
     expect(retriever.retrieve).not.toHaveBeenCalled();
     expect(webSearch.search).not.toHaveBeenCalled();
     expect(groundedAnswerService.answer).not.toHaveBeenCalled();

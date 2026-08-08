@@ -2,7 +2,7 @@ import type { Context, Hono } from "hono";
 
 import type { Env } from "../config";
 import { requireKnowledgeAdmin } from "./admin-auth";
-import { stableUuid, type KnowledgeAdminRepository } from "./admin-routes";
+import { claimedUploadDependencies, stableUuid, type KnowledgeAdminRepository } from "./admin-routes";
 import { ClaimedUploadError, finalizeClaimedUpload } from "./claimed-upload";
 import type { KnowledgeDraft, KnowledgeDraftRepository, KnowledgeDraftStatus } from "./drafts";
 import type { KnowledgeObjectStore } from "./storage";
@@ -92,25 +92,16 @@ async function approveDraft(context: Context<{ Bindings: Env }>, dependencies: K
     if (claim.disposition === "duplicate") return persistApproval(context, drafts, draft.id, documentId, createdAt, 200);
     await finalizeClaimedUpload(
       { documentId, jobId, claim: { disposition: "resume_queue" }, createdAt },
-      {
-        repository: knowledge, store: dependencies.objectStoreFor(context.env),
-        queue: dependencies.queueFor(context.env), now: dependencies.now,
-      },
+      claimedUploadDependencies(context.env, dependencies, knowledge),
     );
     return persistApproval(context, drafts, draft.id, documentId, createdAt, 202);
   }
 
-  const uploadDependencies = {
-    repository: knowledge,
-    store: dependencies.objectStoreFor(context.env),
-    queue: dependencies.queueFor(context.env),
-    now: dependencies.now,
-  };
   await finalizeClaimedUpload({
     documentId, jobId, claim,
     blob: new Blob([draft.markdown], { type: "text/markdown; charset=utf-8" }),
     displayName, mimeType: "text/markdown; charset=utf-8", createdAt,
-  }, uploadDependencies);
+  }, claimedUploadDependencies(context.env, dependencies, knowledge));
   return persistApproval(context, drafts, draft.id, documentId, createdAt, 202);
 }
 
@@ -150,8 +141,25 @@ function boundedLimit(value: string | undefined): number {
 }
 
 function safeTopic(value: string): string {
-  const sanitized = value.replace(/[\u0000-\u001f\u007f-\u009f\\/:*?"<>|]/g, "-").replace(/[. ]+$/g, "").trim();
-  return sanitized || "knowledge-card";
+  const sanitized = value
+    .replace(/[\p{Cc}\p{Cf}\\/:*?"<>|]/gu, "")
+    .trim()
+    .replace(/[. ]+$/g, "");
+  const bounded = truncateUtf8(sanitized, 251).replace(/[. ]+$/g, "");
+  return bounded || "knowledge-card";
+}
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+  const encoder = new TextEncoder();
+  let result = "";
+  let bytes = 0;
+  for (const character of value) {
+    const width = encoder.encode(character).byteLength;
+    if (bytes + width > maximumBytes) break;
+    result += character;
+    bytes += width;
+  }
+  return result;
 }
 
 async function sha256(value: string): Promise<string> {

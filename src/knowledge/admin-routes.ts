@@ -68,7 +68,7 @@ export function registerKnowledgeAdminRoutes(
       const claim = await repository.claimUpload({ id: documentId, sourceType: "file", displayName, sourceUrl: null, r2Key: null, contentHash, createdAt }, jobId, createdAt, validated.extension);
       if (claim.disposition === "resume_queue") {
         try {
-          const result = await finalizeClaimedUpload({ documentId, jobId, claim: { disposition: "resume_queue" }, createdAt }, uploadDependencies(context.env, dependencies, repository));
+          const result = await finalizeClaimedUpload({ documentId, jobId, claim: { disposition: "resume_queue" }, createdAt }, claimedUploadDependencies(context.env, dependencies, repository));
           return context.json(result, 202);
         } catch (error) {
           return claimedUploadFailure(context, error);
@@ -76,7 +76,7 @@ export function registerKnowledgeAdminRoutes(
       }
       if (claim.disposition !== "winner") return context.json({ documentId, status: "pending" }, 202);
       try {
-        const result = await finalizeClaimedUpload({ documentId, jobId, claim, blob: file, displayName, mimeType: validated.mimeType, createdAt }, uploadDependencies(context.env, dependencies, repository));
+        const result = await finalizeClaimedUpload({ documentId, jobId, claim, blob: file, displayName, mimeType: validated.mimeType, createdAt }, claimedUploadDependencies(context.env, dependencies, repository));
         return context.json(result, 202);
       } catch (error) {
         return claimedUploadFailure(context, error);
@@ -100,7 +100,7 @@ export function registerKnowledgeAdminRoutes(
       const claim = await repository.claimUpload({ id: documentId, sourceType: "url", displayName: new URL(normalized).hostname, sourceUrl: normalized, r2Key: null, contentHash: null, createdAt }, jobId, createdAt, ".md");
       if (claim.disposition === "resume_queue") {
         try {
-          const result = await finalizeClaimedUpload({ documentId, jobId, claim: { disposition: "resume_queue" }, createdAt }, uploadDependencies(context.env, dependencies, repository));
+          const result = await finalizeClaimedUpload({ documentId, jobId, claim: { disposition: "resume_queue" }, createdAt }, claimedUploadDependencies(context.env, dependencies, repository));
           return context.json(result, 202);
         } catch (error) {
           return claimedUploadFailure(context, error);
@@ -125,7 +125,7 @@ export function registerKnowledgeAdminRoutes(
       catch { await Promise.allSettled([repository.abandonUploadClaim(documentId, token)]); return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500); }
       if (!updated) return context.json({ documentId, status: "pending" }, 202);
       try {
-        const result = await finalizeClaimedUpload({ documentId, jobId, claim, blob: new Blob([article.html], { type: "text/markdown; charset=utf-8" }), displayName: `${article.title}.md`, mimeType: "text/markdown; charset=utf-8", createdAt }, uploadDependencies(context.env, dependencies, repository));
+        const result = await finalizeClaimedUpload({ documentId, jobId, claim, blob: new Blob([article.html], { type: "text/markdown; charset=utf-8" }), displayName: `${article.title}.md`, mimeType: "text/markdown; charset=utf-8", createdAt }, claimedUploadDependencies(context.env, dependencies, repository));
         return context.json(result, 202);
       } catch (error) {
         return claimedUploadFailure(context, error);
@@ -186,7 +186,11 @@ export function registerKnowledgeAdminRoutes(
 
 function invalidRequest(context: Context) { return context.json({ error: { code: "invalid_request", message: "Invalid request" } }, 400); }
 function conflict() { return new Response(JSON.stringify({ error: { code: "conflict", message: "Conflict" } }), { status: 409, headers: { "content-type": "application/json" } }); }
-function uploadDependencies(env: Env, dependencies: KnowledgeUploadDependencies, repository: KnowledgeAdminRepository) {
+export function claimedUploadDependencies(
+  env: Env,
+  dependencies: Pick<KnowledgeUploadDependencies, "objectStoreFor" | "queueFor" | "now">,
+  repository: Pick<KnowledgeAdminRepository, "completeUpload" | "failUpload" | "clearUploadClaim">,
+) {
   const store: KnowledgeObjectStore = {
     putOriginal: (...input) => dependencies.objectStoreFor(env).putOriginal(...input),
     getOriginal: (key) => dependencies.objectStoreFor(env).getOriginal(key),

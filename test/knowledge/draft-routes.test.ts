@@ -14,8 +14,8 @@ const pending: KnowledgeDraft = {
   expiresAt: "2026-11-06T00:00:00.000Z", reviewedAt: null,
 };
 
-function setup(options: { queueFails?: boolean } = {}) {
-  let draft = structuredClone(pending);
+function setup(options: { queueFails?: boolean; topic?: string; markdown?: string; claimDisposition?: "winner" | "resume_queue" } = {}) {
+  let draft = { ...structuredClone(pending), ...(options.topic === undefined ? {} : { topic: options.topic }), ...(options.markdown === undefined ? {} : { markdown: options.markdown }) };
   const drafts = {
     list: vi.fn(async (_status: string, _limit: number) => [draft]),
     get: vi.fn(async (id: string) => id === draft.id ? structuredClone(draft) : null),
@@ -33,7 +33,9 @@ function setup(options: { queueFails?: boolean } = {}) {
     }),
   };
   const knowledge = {
-    claimUpload: vi.fn(async (_document: unknown, _jobId: string) => ({ disposition: "winner", token: "claim", r2Key: "generated.md", previousR2Key: null })),
+    claimUpload: vi.fn(async (_document: unknown, _jobId: string) => options.claimDisposition === "resume_queue"
+      ? { disposition: "resume_queue" as const }
+      : { disposition: "winner" as const, token: "claim", r2Key: "generated.md", previousR2Key: null }),
     completeUpload: vi.fn(async () => true), failUpload: vi.fn(async () => true), clearUploadClaim: vi.fn(async () => true),
   };
   const objectStore = {
@@ -103,6 +105,66 @@ describe("knowledge draft review API", () => {
     expect(second.status).toBe(200);
     expect(await second.json()).toEqual({ draft: { id: "draft-1", status: "approved", documentId: firstBody.draft.documentId } });
     expect(d.ingestionQueue.send).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ["evil controls", `safe\u202Ename\u2066/../../bad:*?\"<>|`],
+    ["all blank", ` \t\n\u200B\u2066 `],
+    ["all illegal", `<>:\"/\\|?*\u202E\u2066`],
+    ["Unicode format controls", `跑\u200B步\u200D補\u202E水\u2066`],
+    ["overlong Unicode", "跑".repeat(120)],
+  ])("creates a bounded safe Markdown filename for %s", async (_label, topic) => {
+    const d = setup({ topic });
+    const response = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+    expect(response.status).toBe(202);
+    const displayName = (d.knowledge.claimUpload.mock.calls[0]![0] as { displayName: string }).displayName;
+    expect(displayName).toMatch(/\.md$/);
+    expect(new TextEncoder().encode(displayName).byteLength).toBeLessThanOrEqual(255);
+    expect(displayName).not.toMatch(/[\p{Cc}\p{Cf}\\/:*?"<>|]/u);
+    if (_label.startsWith("all ")) expect(displayName).toBe("knowledge-card.md");
+  });
+
+  test("claims the generated card with its exact SHA-256 content hash", async () => {
+    const markdown = "# 精確內容\n\n不可改寫";
+    const d = setup({ markdown });
+    await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+    const claimed = d.knowledge.claimUpload.mock.calls[0]![0] as { contentHash: string };
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(markdown));
+    const expected = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    expect(claimed.contentHash).toBe(expected);
+  });
+
+  test("resume_queue does not initialize R2 and a synchronous Queue factory failure is a safe 503", async () => {
+    const d = setup({ claimDisposition: "resume_queue" });
+    const objectStoreFactory = vi.fn(() => d.objectStore);
+    const worker = createWorker({
+      now: () => now, draftReviews: d.drafts as never, knowledge: d.knowledge as never,
+      objectStore: objectStoreFactory, ingestionQueue: undefined,
+    });
+    const env = { ADMIN_API_TOKEN: "admin-secret" } as Env;
+    Object.defineProperty(env, "INGESTION_QUEUE", { get() { throw new Error("Queue binding secret"); } });
+    const response = await worker.fetch(new Request("https://worker.test/admin/knowledge/drafts/draft-1/approve", {
+      method: "POST", headers: { authorization: "Bearer admin-secret" },
+    }) as never, env, {} as ExecutionContext);
+    expect(response.status).toBe(503);
+    expect(objectStoreFactory).not.toHaveBeenCalled();
+  });
+
+  test("a synchronous Queue factory failure after a winning upload fails and cleans up safely", async () => {
+    const d = setup();
+    const worker = createWorker({
+      now: () => now, draftReviews: d.drafts as never, knowledge: d.knowledge as never,
+      objectStore: d.objectStore, ingestionQueue: undefined,
+    });
+    const env = { ADMIN_API_TOKEN: "admin-secret" } as Env;
+    Object.defineProperty(env, "INGESTION_QUEUE", { get() { throw new Error("Queue binding secret"); } });
+    const response = await worker.fetch(new Request("https://worker.test/admin/knowledge/drafts/draft-1/approve", {
+      method: "POST", headers: { authorization: "Bearer admin-secret" },
+    }) as never, env, {} as ExecutionContext);
+    expect(response.status).toBe(503);
+    expect(d.knowledge.failUpload).toHaveBeenCalledOnce();
+    expect(d.objectStore.deleteOriginal).toHaveBeenCalledWith("generated.md");
+    expect(d.current().status).toBe("pending");
   });
 
   test("keeps a draft pending after Queue failure and retries the same document and job IDs", async () => {

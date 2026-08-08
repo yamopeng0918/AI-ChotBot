@@ -145,9 +145,9 @@ function workersAiErrorMetadata(error: unknown): {
 } {
   if (error === null || typeof error !== "object") return {};
 
-  const name = Reflect.get(error, "name");
-  const code = Reflect.get(error, "code");
-  const status = Reflect.get(error, "status");
+  const name = safeMetadataValue(error, "name");
+  const code = safeMetadataValue(error, "code");
+  const status = safeMetadataValue(error, "status");
   return {
     ...(name === "InferenceUpstreamError" || name === "AiInternalError" ? { errorName: name } : {}),
     ...(typeof code === "number" && Number.isFinite(code) ? { code } : {}),
@@ -155,6 +155,14 @@ function workersAiErrorMetadata(error: unknown): {
       ? { status }
       : {}),
   };
+}
+
+function safeMetadataValue(error: object, key: "name" | "code" | "status"): unknown {
+  try {
+    return Reflect.get(error, key);
+  } catch {
+    return undefined;
+  }
 }
 
 function workersAiResponseText(payload: unknown): string {

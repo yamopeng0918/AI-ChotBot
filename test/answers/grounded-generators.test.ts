@@ -222,6 +222,22 @@ describe("WorkersAiGroundedGenerator", () => {
     expect(JSON.stringify(failure)).not.toContain("secret-provider-message");
   });
 
+  it("fails closed when binding error metadata accessors throw", async () => {
+    const bindingError = Object.defineProperty({}, "name", {
+      get() {
+        throw new Error("secret-accessor-message");
+      },
+    });
+    const ai = { run: vi.fn().mockRejectedValue(bindingError) };
+
+    const rejection = new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]);
+    await expect(rejection).rejects.toMatchObject({
+      name: "GroundedProviderError",
+      reason: "network",
+    });
+    await expect(rejection).rejects.not.toThrow("secret-accessor-message");
+  });
+
   it("accepts a plain string response", async () => {
     const ai = { run: vi.fn().mockResolvedValue("  {\"answer\":\"A\",\"claims\":[]}  ") };
 

@@ -8,6 +8,7 @@ import { GroundedAnswerService, type GroundedValidationEvent } from "./answers/g
 import {
   FallbackGroundedGenerator,
   OpenRouterGroundedGenerator,
+  WORKERS_AI_GROUNDED_MODEL,
   WorkersAiGroundedGenerator,
   type GroundedGeneratorEntry,
 } from "./answers/grounded-generators";
@@ -289,7 +290,7 @@ return {
       entries.push({
         provider: "workers_ai",
         role: "terminal",
-        model: "@cf/meta/llama-3.2-3b-instruct",
+        model: WORKERS_AI_GROUNDED_MODEL,
         generator: new WorkersAiGroundedGenerator(env.AI),
       });
       const groundedGenerator = new FallbackGroundedGenerator(entries, (event) => {

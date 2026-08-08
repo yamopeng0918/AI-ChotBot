@@ -35,7 +35,36 @@ export type GroundedGeneratorEntry = {
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type AiBinding = Pick<Ai, "run">;
-const WORKERS_AI_GROUNDED_MODEL = "@cf/meta/llama-3.2-3b-instruct";
+export const WORKERS_AI_GROUNDED_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
+
+const GROUNDED_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["answer", "claims"],
+    properties: {
+      answer: { type: "string" },
+      claims: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["text", "evidenceIds"],
+          properties: {
+            text: { type: "string" },
+            evidenceIds: {
+              type: "array",
+              minItems: 1,
+              uniqueItems: true,
+              items: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
 
 export class OpenRouterGroundedGenerator implements GroundedGenerator {
   constructor(
@@ -86,20 +115,40 @@ export class WorkersAiGroundedGenerator implements GroundedGenerator {
   ) {}
 
   async generate(messages: GroundedMessage[]): Promise<GroundedGeneration> {
-    const payload = await this.ai.run(this.model, { messages, temperature: 0, max_tokens: 900 }) as
-      | string
-      | { response?: unknown; choices?: Array<{ message?: { content?: unknown } }> };
-    const text = typeof payload === "string"
-      ? payload.trim()
-      : payload !== null && typeof payload === "object"
-        ? typeof payload.response === "string"
-          ? payload.response.trim()
-          : typeof payload.choices?.[0]?.message?.content === "string"
-            ? payload.choices[0].message.content.trim()
-            : ""
-        : "";
+    const payload: unknown = await this.ai.run(this.model, {
+      messages,
+      temperature: 0,
+      max_tokens: 900,
+      response_format: GROUNDED_RESPONSE_FORMAT,
+    });
+    const text = workersAiResponseText(payload);
     if (!text) throw new GroundedProviderError("malformed");
     return { text, model: this.model };
+  }
+}
+
+function workersAiResponseText(payload: unknown): string {
+  if (typeof payload === "string") return payload.trim();
+  if (!isPlainObject(payload)) return "";
+
+  const response = payload.response;
+  if (typeof response === "string") return response.trim();
+  if (!isPlainObject(response)) return "";
+
+  try {
+    return JSON.stringify(response)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
   }
 }
 

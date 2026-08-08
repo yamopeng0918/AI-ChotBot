@@ -236,11 +236,11 @@ describe("grounded provider production wiring", () => {
 
     expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model", "fallback/model"]);
     expect(ai.run).toHaveBeenCalledWith(
-      "@cf/meta/llama-3.2-3b-instruct",
+      "@cf/meta/llama-3.1-8b-instruct-fast",
       expect.objectContaining({ messages: expect.any(Array) }),
     );
     expect(repository.prepare).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "answered", model: "@cf/meta/llama-3.2-3b-instruct" }),
+      expect.objectContaining({ status: "answered", model: "@cf/meta/llama-3.1-8b-instruct-fast" }),
       "answered",
       expect.any(String),
     );
@@ -253,7 +253,7 @@ describe("grounded provider production wiring", () => {
 
       expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model"]);
       expect(ai.run).toHaveBeenCalledWith(
-        "@cf/meta/llama-3.2-3b-instruct",
+        "@cf/meta/llama-3.1-8b-instruct-fast",
         expect.objectContaining({ messages: expect.any(Array) }),
       );
     },

@@ -58,14 +58,44 @@ describe("FallbackGroundedGenerator", () => {
     const chain = new FallbackGroundedGenerator([
       { provider: "openrouter", role: "primary", model: "p", generator: { generate: vi.fn().mockRejectedValue(new Error("p")) } },
       { provider: "openrouter", role: "fallback", model: "f", generator: { generate: vi.fn().mockRejectedValue(new Error("f")) } },
-      { provider: "workers_ai", role: "terminal", model: "@cf/meta/llama-3.2-3b-instruct", generator: new WorkersAiGroundedGenerator(ai) },
+      { provider: "workers_ai", role: "terminal", model: "@cf/meta/llama-3.1-8b-instruct-fast", generator: new WorkersAiGroundedGenerator(ai) },
     ]);
 
     await expect(chain.generate([{ role: "system", content: "evidence" }]))
-      .resolves.toMatchObject({ model: "@cf/meta/llama-3.2-3b-instruct" });
-    expect(ai.run).toHaveBeenCalledWith("@cf/meta/llama-3.2-3b-instruct", expect.objectContaining({
-      messages: [{ role: "system", content: "evidence" }], temperature: 0, max_tokens: 900,
-    }));
+      .resolves.toMatchObject({ model: "@cf/meta/llama-3.1-8b-instruct-fast" });
+    expect(ai.run).toHaveBeenCalledWith("@cf/meta/llama-3.1-8b-instruct-fast", {
+      messages: [{ role: "system", content: "evidence" }],
+      temperature: 0,
+      max_tokens: 900,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["answer", "claims"],
+          properties: {
+            answer: { type: "string" },
+            claims: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["text", "evidenceIds"],
+                properties: {
+                  text: { type: "string" },
+                  evidenceIds: {
+                    type: "array",
+                    minItems: 1,
+                    uniqueItems: true,
+                    items: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
   });
 
   it("does not call later generators after primary success", async () => {
@@ -136,20 +166,23 @@ describe("WorkersAiGroundedGenerator", () => {
     const ai = { run: vi.fn().mockResolvedValue("  {\"answer\":\"A\",\"claims\":[]}  ") };
 
     await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
-      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.2-3b-instruct" });
+      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.1-8b-instruct-fast" });
   });
 
-  it("accepts choices message content", async () => {
-    const ai = { run: vi.fn().mockResolvedValue({ choices: [{ message: { content: "  {\"answer\":\"A\",\"claims\":[]}  " } }] }) };
+  it("serializes a structured response object for the unchanged downstream parser", async () => {
+    const ai = { run: vi.fn().mockResolvedValue({ response: { answer: "A", claims: [] } }) };
 
     await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
-      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.2-3b-instruct" });
+      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.1-8b-instruct-fast" });
   });
 
   it.each([
     ["null", null],
     ["undefined", undefined],
     ["an object without textual content", { response: 123 }],
+    ["an array response", { response: [] }],
+    ["a null response", { response: null }],
+    ["an unserializable response object", { response: { answer: BigInt(1) } }],
   ])("rejects %s as malformed", async (_name, payload) => {
     const ai = { run: vi.fn().mockResolvedValue(payload) };
 

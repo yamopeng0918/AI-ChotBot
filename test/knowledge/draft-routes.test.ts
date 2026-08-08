@@ -239,6 +239,22 @@ describe("knowledge draft review API", () => {
     expect(d.current()).toMatchObject({ status: "approved", documentId: expect.any(String) });
   });
 
+  test("keeps the reservation when D1 approval fails after Queue send succeeds", async () => {
+    const d = setup();
+    d.drafts.approve.mockRejectedValueOnce(new Error("D1 provider secret"));
+
+    const response = await d.request("/admin/knowledge/drafts/draft-1/approve", { method: "POST" });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: { code: "internal_error", message: "Internal error" } });
+    expect(d.ingestionQueue.send).toHaveBeenCalledOnce();
+    expect(d.drafts.releaseApproval).not.toHaveBeenCalled();
+    expect(d.current()).toMatchObject({ status: "pending", documentId: expect.any(String) });
+    const reject = await d.request("/admin/knowledge/drafts/draft-1/reject", { method: "POST" });
+    expect(reject.status).toBe(409);
+    expect(d.current()).toMatchObject({ status: "pending", documentId: expect.any(String) });
+  });
+
   test("returns the persisted approval when marking loses a race without enqueueing another job", async () => {
     const d = setup();
     const documentId = await stableUuid("knowledge-document:", "knowledge-draft:draft-1");

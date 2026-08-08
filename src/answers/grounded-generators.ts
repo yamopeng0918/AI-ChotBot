@@ -44,15 +44,16 @@ const GROUNDED_RESPONSE_FORMAT = {
     additionalProperties: false,
     required: ["answer", "claims"],
     properties: {
-      answer: { type: "string" },
+      answer: { type: "string", minLength: 1 },
       claims: {
         type: "array",
+        minItems: 1,
         items: {
           type: "object",
           additionalProperties: false,
           required: ["text", "evidenceIds"],
           properties: {
-            text: { type: "string" },
+            text: { type: "string", minLength: 1 },
             evidenceIds: {
               type: "array",
               minItems: 1,

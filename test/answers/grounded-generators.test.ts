@@ -74,15 +74,16 @@ describe("FallbackGroundedGenerator", () => {
           additionalProperties: false,
           required: ["answer", "claims"],
           properties: {
-            answer: { type: "string" },
+            answer: { type: "string", minLength: 1 },
             claims: {
               type: "array",
+              minItems: 1,
               items: {
                 type: "object",
                 additionalProperties: false,
                 required: ["text", "evidenceIds"],
                 properties: {
-                  text: { type: "string" },
+                  text: { type: "string", minLength: 1 },
                   evidenceIds: {
                     type: "array",
                     minItems: 1,
@@ -170,10 +171,15 @@ describe("WorkersAiGroundedGenerator", () => {
   });
 
   it("serializes a structured response object for the unchanged downstream parser", async () => {
-    const ai = { run: vi.fn().mockResolvedValue({ response: { answer: "A", claims: [] } }) };
+    const ai = { run: vi.fn().mockResolvedValue({
+      response: { answer: "A", claims: [{ text: "A", evidenceIds: ["e1"] }] },
+    }) };
 
     await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
-      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.1-8b-instruct-fast" });
+      .resolves.toEqual({
+        text: "{\"answer\":\"A\",\"claims\":[{\"text\":\"A\",\"evidenceIds\":[\"e1\"]}]}",
+        model: "@cf/meta/llama-3.1-8b-instruct-fast",
+      });
   });
 
   it.each([

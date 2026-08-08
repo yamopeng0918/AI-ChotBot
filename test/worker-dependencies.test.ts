@@ -46,6 +46,23 @@ describe("createWorker repository injection", () => {
     expect(retrieverFactory).toHaveBeenCalledWith(env); expect(webFactory).toHaveBeenCalledWith(env); expect(groundedFactory).toHaveBeenCalledWith(env);
     expect(grounded.answer).toHaveBeenCalledWith(expect.objectContaining({ evidence: [evidence] })); expect(message.ack).toHaveBeenCalledOnce();
   });
+  it("injects draft storage only into enabled knowledge answering", async () => {
+    const repository = { claim: vi.fn().mockResolvedValue({ state: "claimed", leaseToken: "lease", leaseUntil: "2026-07-18T00:01:00.000Z", createdAt: job.receivedAt, expiresAt: "2026-08-18T00:00:00.000Z" }), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(), purgeExpired: vi.fn() };
+    const web = { id: "web:run", sourceType: "web", title: "Official run guide", url: "https://example.gov/run", text: "The route opens at six.", pageNumber: null, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
+    const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) };
+    const webSearch = { search: vi.fn().mockResolvedValue([web]) };
+    const grounded = { answer: vi.fn().mockResolvedValue({ text: "The route opens at six.", model: "m", citations: [], usedEvidenceIds: [web.id], validatedClaims: [{ text: "The route opens at six.", evidenceIds: [web.id] }] }) };
+    const drafts = { createOrRefresh: vi.fn().mockResolvedValue(undefined) };
+    const draftFactory = vi.fn(() => drafts);
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).includes("api.line.me") ? new Response(null, { status: 200 }) : new Response(null, { status: 500 }));
+    const worker = createWorker({ questions: repository, retriever: () => retriever, webSearch: () => webSearch, groundedAnswerService: () => grounded, knowledgeDrafts: draftFactory, fetcher });
+    const env = { ANALYTICS_HASH_KEY: "analytics-key-at-least-32-bytes", LINE_CHANNEL_ACCESS_TOKEN: "line", OPENROUTER_API_KEY: "key", OPENROUTER_MODEL: "model" } as Env;
+
+    await worker.queue({ messages: [{ body: { ...job, text: "search online for run time" }, ack: vi.fn(), retry: vi.fn() }] } as never, env, {} as ExecutionContext);
+
+    expect(draftFactory).toHaveBeenCalledWith(env);
+    expect(drafts.createOrRefresh).toHaveBeenCalledWith(expect.objectContaining({ sources: [expect.objectContaining({ url: "https://example.gov/run" })] }));
+  });
   it("uses the injected repository in the queue consumer", async () => {
     const repository = {
       claim: vi.fn().mockResolvedValue({ state: "completed" }),

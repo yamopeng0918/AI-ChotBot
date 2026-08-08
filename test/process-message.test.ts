@@ -3,7 +3,7 @@ import type { QuestionJob } from "../src/jobs/types";
 import { processQuestion } from "../src/jobs/process-message";
 import worker from "../src/index";
 import { LineReplyError } from "../src/line/client";
-import type { TelemetryEvent, TelemetryLogger } from "../src/telemetry/logger";
+import { createConsoleTelemetryLogger, type TelemetryEvent, type TelemetryLogger } from "../src/telemetry/logger";
 import { AnswerUnavailableError, WorkersAiAnswerService } from "../src/answers/openrouter";
 import type { AnswerProviderObserver } from "../src/answers/types";
 const job: QuestionJob = { webhookEventId: "event-1", replyToken: "reply-1", groupId: "group-1", userId: "user-1", messageId: "message-1", text: "Where should I run?", timestamp: 1, receivedAt: "2026-07-18T00:00:00.000Z" };
@@ -601,6 +601,73 @@ describe("processQuestion", () => {
     const d = deps({ ...claimed, prepared: { text: "saved", model: "saved-model", status: "answered" } }); const retriever = { retrieve: vi.fn() }, webSearch = { search: vi.fn() }, groundedAnswerService = { answer: vi.fn() };
     await processQuestion(job, { ...d, retriever, webSearch, groundedAnswerService });
     expect(retriever.retrieve).not.toHaveBeenCalled(); expect(webSearch.search).not.toHaveBeenCalled(); expect(groundedAnswerService.answer).not.toHaveBeenCalled();
+  });
+
+  it("creates a review-only draft from a newly grounded web answer without question identity fields", async () => {
+    const d = deps();
+    const web = { id: "web:run", sourceType: "web", title: "Official run guide", url: "https://example.gov/run", text: "The route opens at six.", pageNumber: null, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
+    const knowledgeDrafts = { createOrRefresh: vi.fn().mockResolvedValue(undefined) };
+    const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "The route opens at six.", model: "grounded-model", citations: [], usedEvidenceIds: [web.id], validatedClaims: [{ text: "The route opens at six.", evidenceIds: [web.id] }] }) };
+
+    await expect(processQuestion({ ...job, text: "search online for run time" }, {
+      ...d,
+      retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) },
+      webSearch: { search: vi.fn().mockResolvedValue([web]) },
+      groundedAnswerService,
+      knowledgeDrafts,
+    })).resolves.toEqual({ disposition: "ack", status: "answered" });
+
+    expect(knowledgeDrafts.createOrRefresh).toHaveBeenCalledOnce();
+    expect(knowledgeDrafts.createOrRefresh).toHaveBeenCalledWith(expect.objectContaining({
+      topic: "The route opens at six.",
+      sources: [expect.objectContaining({ url: "https://example.gov/run" })],
+    }));
+    const draft = knowledgeDrafts.createOrRefresh.mock.calls[0]![0] as Record<string, unknown>;
+    expect(draft).not.toHaveProperty("groupId"); expect(draft).not.toHaveProperty("userId"); expect(draft).not.toHaveProperty("userKey"); expect(draft).not.toHaveProperty("replyToken"); expect(draft).not.toHaveProperty("question");
+    expect(draft.markdown).not.toContain("search online for run time");
+  });
+
+  it("keeps LINE delivery and completion successful when draft storage fails", async () => {
+    const d = deps(); const events: TelemetryEvent[] = [];
+    const web = { id: "web:run", sourceType: "web", title: "Official run guide", url: "https://example.gov/run", text: "The route opens at six.", pageNumber: null, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
+    const knowledgeDrafts = { createOrRefresh: vi.fn().mockRejectedValue(new Error("D1 draft secret")) };
+    const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "The route opens at six.", model: "grounded-model", citations: [], usedEvidenceIds: [web.id], validatedClaims: [{ text: "The route opens at six.", evidenceIds: [web.id] }] }) };
+
+    await expect(processQuestion({ ...job, text: "search online for run time" }, {
+      ...d, logger: createConsoleTelemetryLogger((event) => events.push(event)),
+      retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) }, webSearch: { search: vi.fn().mockResolvedValue([web]) }, groundedAnswerService, knowledgeDrafts,
+    })).resolves.toEqual({ disposition: "ack", status: "answered" });
+
+    expect(d.lineClient.reply).toHaveBeenCalledWith(job.replyToken, "The route opens at six.");
+    expect(d.questions.complete).toHaveBeenCalledWith(expect.objectContaining({ status: "answered" }), "lease-a");
+    const draftEvent = events.find((event) => event.event === "knowledge_draft.create");
+    expect(draftEvent).toMatchObject({ event: "knowledge_draft.create", outcome: "failed", sourceCount: 1, errorType: "storage_unavailable" });
+    expect(Object.keys(draftEvent ?? {}).sort()).toEqual(["errorType", "event", "outcome", "sourceCount", "timestamp"]);
+    expect(JSON.stringify(events)).not.toContain("D1 draft secret");
+  });
+
+  it("does not draft sufficient knowledge, weather, fallback, or knowledge-only grounding", async () => {
+    const knowledgeDrafts = { createOrRefresh: vi.fn().mockResolvedValue(undefined) };
+    const kb = { id: "kb", sourceType: "knowledge", title: "Guide", url: null, text: "Run at six.", pageNumber: 1, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
+    const grounded = { answer: vi.fn().mockResolvedValue({ text: "Run at six.", model: "m", citations: [], usedEvidenceIds: [kb.id], validatedClaims: [{ text: "Run at six.", evidenceIds: [kb.id] }] }) };
+    const common = { retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [kb], insufficient: false, topScore: .9 }) }, webSearch: { search: vi.fn() }, groundedAnswerService: grounded, knowledgeDrafts };
+
+    await processQuestion(job, { ...deps(), ...common });
+    await processQuestion({ ...job, text: "hello!" }, { ...deps(), retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) }, webSearch: { search: vi.fn().mockRejectedValue(new Error("down")) }, groundedAnswerService: { answer: vi.fn() }, knowledgeDrafts });
+    await processQuestion({ ...job, text: "Taipei weather" }, { ...deps(), weatherService: { answer: vi.fn().mockResolvedValue({ text: "Weather", model: "weather" }) }, ...common });
+    await processQuestion({ ...job, text: "What time is it?" }, { ...deps(), retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) }, webSearch: { search: vi.fn().mockRejectedValue(new Error("down")) }, groundedAnswerService: { answer: vi.fn() }, knowledgeDrafts });
+
+    expect(knowledgeDrafts.createOrRefresh).not.toHaveBeenCalled();
+  });
+
+  it("does not recreate drafts on prepared or completed retries", async () => {
+    const knowledgeDrafts = { createOrRefresh: vi.fn().mockResolvedValue(undefined) };
+    const services = { retriever: { retrieve: vi.fn() }, webSearch: { search: vi.fn() }, groundedAnswerService: { answer: vi.fn() }, knowledgeDrafts };
+
+    await processQuestion(job, { ...deps({ ...claimed, prepared: { text: "saved", model: "saved-model", status: "answered" } }), ...services });
+    await processQuestion(job, { ...deps({ state: "completed" }), ...services });
+
+    expect(knowledgeDrafts.createOrRefresh).not.toHaveBeenCalled();
   });
 });
 

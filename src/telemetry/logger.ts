@@ -24,6 +24,7 @@ export const TELEMETRY_EVENT_NAMES = [
   "answer.failed",
   "weather.settings.failed",
   "weather.cache.failed",
+  "knowledge_draft.create",
   "line.reply.completed",
   "line.reply.failed",
   "line.push.completed",
@@ -69,19 +70,30 @@ type TelemetryCorrelation =
   | { operationId: string; webhookEventId?: never };
 
 type TelemetryFields = {
-  event: TelemetryEventName;
+  event: Exclude<TelemetryEventName, "knowledge_draft.create">;
   stage: TelemetryStage;
   outcome: TelemetryOutcome;
   timestamp: string;
   intent?: "general" | "weather";
   model?: string | null;
   durationMs?: number;
+  sourceCount?: number;
   retryDelaySeconds?: number;
   errorType?: TelemetryErrorType;
   detail?: TelemetryDetail;
 };
 
-export type TelemetryEvent = TelemetryFields & TelemetryCorrelation;
+type KnowledgeDraftTelemetryEvent = {
+  event: "knowledge_draft.create";
+  outcome: TelemetryOutcome;
+  timestamp: string;
+  sourceCount: number;
+  errorType?: TelemetryErrorType;
+  webhookEventId?: never;
+  operationId?: never;
+};
+
+export type TelemetryEvent = (TelemetryFields & TelemetryCorrelation) | KnowledgeDraftTelemetryEvent;
 export type TelemetryEventInput = TelemetryEvent extends infer Event
   ? Event extends TelemetryEvent
     ? Omit<Event, "timestamp">
@@ -110,6 +122,15 @@ export interface TelemetryLogger {
 }
 
 function projectEvent(event: TelemetryEvent): TelemetryRecord {
+  if (event.event === "knowledge_draft.create") {
+    return {
+      event: event.event,
+      outcome: event.outcome,
+      timestamp: event.timestamp,
+      sourceCount: event.sourceCount,
+      ...(event.errorType !== undefined ? { errorType: event.errorType } : {}),
+    };
+  }
   const fields = {
     event: event.event,
     stage: event.stage,
@@ -118,6 +139,7 @@ function projectEvent(event: TelemetryEvent): TelemetryRecord {
     ...(event.intent !== undefined ? { intent: event.intent } : {}),
     ...(event.model !== undefined ? { model: event.model } : {}),
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+    ...(event.sourceCount !== undefined ? { sourceCount: event.sourceCount } : {}),
     ...(event.retryDelaySeconds !== undefined
       ? { retryDelaySeconds: event.retryDelaySeconds }
       : {}),

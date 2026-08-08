@@ -7,7 +7,9 @@ import type {
 import { classifyIntent } from "../intents/router";
 import { LineReplyError, type LineClient } from "../line/client";
 import type { GroupSettingsRepository } from "../storage/group-settings";
-import { INSUFFICIENT_EVIDENCE_TEXT, type GroundedAnswerService } from "../answers/grounded";
+import { INSUFFICIENT_EVIDENCE_TEXT, type GroundedAnswer, type GroundedAnswerService } from "../answers/grounded";
+import { buildKnowledgeDraft } from "../knowledge/draft-builder";
+import type { KnowledgeDraftRepository } from "../knowledge/drafts";
 import type { KnowledgeEvidence } from "../knowledge/types";
 import { decideRetrievalRoute } from "../retrieval/router";
 import type { KnowledgeRetriever, RetrievalResult } from "../retrieval/retriever";
@@ -41,7 +43,13 @@ export interface ProcessDependencies {
   retriever?: Pick<KnowledgeRetriever, "retrieve">;
   webSearch?: WebSearchService;
   groundedAnswerService?: Pick<GroundedAnswerService, "answer">;
+  knowledgeDrafts?: Pick<KnowledgeDraftRepository, "createOrRefresh">;
 }
+
+type OrchestratedAnswer = {
+  answer: GroundedAnswer | { text: string; model: string | null };
+  evidence: KnowledgeEvidence[];
+};
 
 async function recordMetricSafe(metrics: MetricsSink | undefined, metric: MetricRecord): Promise<void> {
   if (!metrics) return;
@@ -233,7 +241,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
       detail: "reused_prepared",
     }, dependencies.now);
   } else {
-    const useKnowledgeAnswering = Boolean(
+    const useKnowledgeAnswering = metricIntent !== "weather" && Boolean(
       dependencies.retriever &&
       dependencies.webSearch &&
       dependencies.groundedAnswerService,
@@ -331,15 +339,19 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
       }, dependencies.now);
     };
     try {
-      const answer =
+      const orchestrated =
         useKnowledgeAnswering
           ? await orchestratedAnswer(job.text, dependencies)
-          : await selectedService.answer({
-              question: job.text,
-              locale: "zh-TW",
-              groupId: job.groupId,
-              defaultLocation,
-            }, observeProvider);
+          : {
+              answer: await selectedService.answer({
+                question: job.text,
+                locale: "zh-TW",
+                groupId: job.groupId,
+                defaultLocation,
+              }, observeProvider),
+              evidence: [],
+            };
+      const answer = orchestrated.answer;
       text = answer.text;
       model = answer.model;
       status = "answered";
@@ -352,6 +364,9 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
         model: answer.model,
         durationMs: safeElapsedMs(providerStartedAt, dependencies.now),
       }, dependencies.now);
+      if (isGroundedAnswer(answer) && dependencies.knowledgeDrafts) {
+        await createKnowledgeDraftSafe(answer, orchestrated.evidence, dependencies);
+      }
     } catch (error) {
       text = PROVIDER_UNAVAILABLE_TEXT;
       model = null;
@@ -597,7 +612,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
   return { disposition: "ack", status };
 }
 
-async function orchestratedAnswer(question: string, dependencies: ProcessDependencies): Promise<{ text: string; model: string | null }> {
+async function orchestratedAnswer(question: string, dependencies: ProcessDependencies): Promise<OrchestratedAnswer> {
   let retrieval: RetrievalResult;
   try { retrieval = await dependencies.retriever!.retrieve(question, 8); }
   catch { retrieval = { evidence: [], insufficient: true, topScore: null }; }
@@ -607,9 +622,48 @@ async function orchestratedAnswer(question: string, dependencies: ProcessDepende
     try { evidence.push(...await dependencies.webSearch!.search(question)); }
     catch { webUnavailable = true; }
   }
-  if (evidence.length) return dependencies.groundedAnswerService!.answer({ question, evidence, webUnavailable });
-  if (isClearlyCasual(question)) return dependencies.answerService.answer({ question, locale: "zh-TW" });
-  return { text: INSUFFICIENT_EVIDENCE_TEXT, model: null };
+  if (evidence.length) return { answer: await dependencies.groundedAnswerService!.answer({ question, evidence, webUnavailable }), evidence };
+  if (isClearlyCasual(question)) return { answer: await dependencies.answerService.answer({ question, locale: "zh-TW" }), evidence };
+  return { answer: { text: INSUFFICIENT_EVIDENCE_TEXT, model: null }, evidence };
+}
+
+function isGroundedAnswer(answer: OrchestratedAnswer["answer"]): answer is GroundedAnswer {
+  return "validatedClaims" in answer;
+}
+
+async function createKnowledgeDraftSafe(
+  answer: GroundedAnswer,
+  evidence: KnowledgeEvidence[],
+  dependencies: ProcessDependencies,
+): Promise<void> {
+  let draft;
+  try {
+    draft = await buildKnowledgeDraft(answer, evidence, () => safeNow(dependencies.now));
+  } catch {
+    emit(dependencies.logger, {
+      event: "knowledge_draft.create",
+      outcome: "failed",
+      sourceCount: 0,
+      errorType: "unexpected_error",
+    }, dependencies.now);
+    return;
+  }
+  if (!draft) return;
+  try {
+    await dependencies.knowledgeDrafts!.createOrRefresh(draft);
+    emit(dependencies.logger, {
+      event: "knowledge_draft.create",
+      outcome: "success",
+      sourceCount: draft.sources.length,
+    }, dependencies.now);
+  } catch {
+    emit(dependencies.logger, {
+      event: "knowledge_draft.create",
+      outcome: "failed",
+      sourceCount: draft.sources.length,
+      errorType: "storage_unavailable",
+    }, dependencies.now);
+  }
 }
 function isClearlyCasual(question: string): boolean {
   return /^(?:hi|hello|hey|thanks|thank you|bye|good\s*(?:morning|afternoon|evening|night)|嗨|哈囉|你好|謝謝|再見)[!.。！ ]*$/i.test(question.trim());

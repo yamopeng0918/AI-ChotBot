@@ -31,6 +31,7 @@ import {
 } from "./telemetry/logger";
 import { registerKnowledgeAdminRoutes, type KnowledgeAdminRepository } from "./knowledge/admin-routes";
 import { KnowledgeRepository } from "./knowledge/repository";
+import { KnowledgeDraftRepository } from "./knowledge/drafts";
 import { R2KnowledgeObjectStore, type KnowledgeObjectStore } from "./knowledge/storage";
 import type { ValidatedKnowledgeFile } from "./knowledge/file-validation";
 import { TavilySafeUrlFetcher, type SafeUrlFetcher } from "./knowledge/url-safety";
@@ -47,6 +48,7 @@ type QuestionsFactory = (env: Env) => QuestionsDependency;
 type KnowledgeFactory = (env: Env) => KnowledgeAdminRepository;
 type RetrieverDependency = Pick<KnowledgeRetriever, "retrieve">;
 type GroundedDependency = Pick<GroundedAnswerService, "answer">;
+type KnowledgeDraftDependency = NonNullable<ProcessDependencies["knowledgeDrafts"]>;
 
 export type WorkerDependencies = {
   fetcher?: typeof fetch;
@@ -66,6 +68,7 @@ export type WorkerDependencies = {
   retriever?: RetrieverDependency | ((env: Env) => RetrieverDependency);
   webSearch?: WebSearchService | ((env: Env) => WebSearchService);
   groundedAnswerService?: GroundedDependency | ((env: Env) => GroundedDependency);
+  knowledgeDrafts?: KnowledgeDraftDependency | ((env: Env) => KnowledgeDraftDependency);
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -255,7 +258,7 @@ return {
       webSearch: typeof overrides.webSearch === "function" ? overrides.webSearch(env) : overrides.webSearch,
       groundedAnswerService: typeof overrides.groundedAnswerService === "function" ? overrides.groundedAnswerService(env) : overrides.groundedAnswerService,
     } : null;
-    const knowledgeAnswering = injectedKnowledgeAnswering ?? (env.AI && env.VECTORIZE && env.TAVILY_API_KEY ? (() => {
+    const knowledgeAnswering: Pick<ProcessDependencies, "retriever" | "webSearch" | "groundedAnswerService"> = injectedKnowledgeAnswering ?? (env.AI && env.VECTORIZE && env.TAVILY_API_KEY ? (() => {
       const retrievalRepository = new KnowledgeRepository(env.DB);
       const entries: GroundedGeneratorEntry[] = [{
         provider: "openrouter",
@@ -287,10 +290,16 @@ return {
         groundedAnswerService: new GroundedAnswerService(groundedGenerator),
       };
     })() : {});
+    const knowledgeDrafts = knowledgeAnswering.retriever && knowledgeAnswering.webSearch && knowledgeAnswering.groundedAnswerService
+      ? typeof overrides.knowledgeDrafts === "function"
+        ? overrides.knowledgeDrafts(env)
+        : overrides.knowledgeDrafts ?? new KnowledgeDraftRepository(env.DB)
+      : undefined;
     const dependencies = {
       answerService,
       weatherService,
       ...knowledgeAnswering,
+      ...(knowledgeDrafts ? { knowledgeDrafts } : {}),
       lineClient: new LineClient(fetcher, env.LINE_CHANNEL_ACCESS_TOKEN),
       questions: questionsFor(env),
       groupSettings,

@@ -15,6 +15,24 @@ export class GroundedProviderError extends Error {
   }
 }
 
+export type GroundedProviderRole = "primary" | "fallback" | "terminal";
+export type GroundedProviderEvent = {
+  type: "attempt.started" | "attempt.completed" | "attempt.failed" | "fallback.started";
+  provider: "openrouter" | "workers_ai";
+  role: GroundedProviderRole;
+  model: string;
+  durationMs?: number;
+  reason?: GroundedProviderFailureReason;
+  status?: number;
+};
+
+export type GroundedGeneratorEntry = {
+  provider: "openrouter" | "workers_ai";
+  role: GroundedProviderRole;
+  model: string;
+  generator: GroundedGenerator;
+};
+
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export class OpenRouterGroundedGenerator implements GroundedGenerator {
@@ -56,5 +74,66 @@ export class OpenRouterGroundedGenerator implements GroundedGenerator {
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+export class FallbackGroundedGenerator implements GroundedGenerator {
+  constructor(
+    private readonly entries: GroundedGeneratorEntry[],
+    private readonly observe?: (event: GroundedProviderEvent) => void,
+    private readonly now: () => number = () => Date.now(),
+  ) {
+    if (!entries.length) throw new RangeError("at least one grounded generator is required");
+  }
+
+  async generate(messages: GroundedMessage[]): Promise<GroundedGeneration> {
+    let terminal: unknown = new Error("grounded model unavailable");
+    for (let index = 0; index < this.entries.length; index++) {
+      const entry = this.entries[index]!;
+      if (index > 0) {
+        this.notify({ type: "fallback.started", provider: entry.provider, role: entry.role, model: entry.model });
+      }
+      const startedAt = this.safeNow();
+      this.notify({ type: "attempt.started", provider: entry.provider, role: entry.role, model: entry.model });
+      try {
+        const result = await entry.generator.generate(messages);
+        this.notify({
+          type: "attempt.completed",
+          provider: entry.provider,
+          role: entry.role,
+          model: result.model,
+          durationMs: Math.max(0, this.safeNow() - startedAt),
+        });
+        return result;
+      } catch (error) {
+        terminal = error;
+        const failure = error instanceof GroundedProviderError
+          ? { reason: error.reason, ...(error.status === undefined ? {} : { status: error.status }) }
+          : { reason: "network" as const };
+        this.notify({
+          type: "attempt.failed",
+          provider: entry.provider,
+          role: entry.role,
+          model: entry.model,
+          durationMs: Math.max(0, this.safeNow() - startedAt),
+          ...failure,
+        });
+      }
+    }
+    throw terminal;
+  }
+
+  private safeNow(): number {
+    try {
+      return this.now();
+    } catch {
+      return Date.now();
+    }
+  }
+
+  private notify(event: GroundedProviderEvent): void {
+    try {
+      this.observe?.(event);
+    } catch {}
   }
 }

@@ -121,6 +121,36 @@ describe("GroundedAnswerService", () => {
     expect(prompt).toContain("Web search was unavailable");
   });
 
+  it("accepts valid JSON enclosed in one whole-output json fence", async () => {
+    const fenced = `\`\`\`json\n${valid}\n\`\`\``;
+    const answer = await new GroundedAnswerService({ generate: vi.fn().mockResolvedValue({ text: fenced, model: "m" }) }, async () => true)
+      .answer({ question: "When and where?", evidence: [file, page, web], webUnavailable: false });
+
+    expect(answer.usedEvidenceIds).toEqual(["kb-1", "kb-2", "web:1"]);
+  });
+
+  it.each([
+    `Here is the answer:\n\`\`\`json\n${valid}\n\`\`\``,
+    `\`\`\`json\n${valid}\n\`\`\`\nThanks!`,
+  ])("rejects prose outside a json fence", async (generated) => {
+    const generate = vi.fn().mockResolvedValue({ text: generated, model: "m" });
+    const answer = await new GroundedAnswerService({ generate }, async () => true)
+      .answer({ question: "When and where?", evidence: [file, page, web], webUnavailable: false });
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(answer.text).toBe(INSUFFICIENT_EVIDENCE_TEXT);
+  });
+
+  it("instructs the model to emit extractive claims and an exact joined answer", async () => {
+    const generate = vi.fn().mockResolvedValue({ text: valid, model: "m" });
+    await new GroundedAnswerService({ generate }, async () => true)
+      .answer({ question: "When and where?", evidence: [file, page, web], webUnavailable: false });
+
+    const systemPrompt = generate.mock.calls[0]![0][0].content;
+    expect(systemPrompt).toContain("Each claim must be one complete verbatim sentence from a cited evidence text; do not translate or paraphrase it.");
+    expect(systemPrompt).toContain("The answer must be the claims joined in order with exactly one space.");
+  });
+
   it.each([
     ["unsupported ID", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: ["missing"] }] }), [file], async () => true],
     ["uncited factual claim", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: [] }] }), [file], async () => true],

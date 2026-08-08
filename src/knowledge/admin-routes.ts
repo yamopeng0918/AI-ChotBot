@@ -195,7 +195,15 @@ export function registerKnowledgeAdminRoutes(
 function invalidRequest(context: Context) { return context.json({ error: { code: "invalid_request", message: "Invalid request" } }, 400); }
 function conflict() { return new Response(JSON.stringify({ error: { code: "conflict", message: "Conflict" } }), { status: 409, headers: { "content-type": "application/json" } }); }
 function uploadDependencies(env: Env, dependencies: KnowledgeUploadDependencies, repository: KnowledgeAdminRepository) {
-  return { repository, store: dependencies.objectStoreFor(env), queue: dependencies.queueFor(env), now: dependencies.now };
+  const store: KnowledgeObjectStore = {
+    putOriginal: (...input) => dependencies.objectStoreFor(env).putOriginal(...input),
+    getOriginal: (key) => dependencies.objectStoreFor(env).getOriginal(key),
+    deleteOriginal: (key) => dependencies.objectStoreFor(env).deleteOriginal(key),
+  };
+  const queue: Pick<Queue<IngestionJobMessage>, "send"> = {
+    send: (message) => dependencies.queueFor(env).send(message),
+  };
+  return { repository, store, queue, now: dependencies.now };
 }
 function claimedUploadFailure(context: Context, error: unknown) {
   if (error instanceof ClaimedUploadError && error.code === "queue_unavailable") return context.json({ error: { code: "queue_unavailable", message: "Queue unavailable" } }, 503);

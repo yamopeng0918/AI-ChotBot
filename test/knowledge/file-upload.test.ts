@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from "vitest";
+import { Hono } from "hono";
 import type { Env } from "../../src/config";
 import { createWorker } from "../../src/index";
+import { registerKnowledgeAdminRoutes } from "../../src/knowledge/admin-routes";
 import { KnowledgeRepository } from "../../src/knowledge/repository";
 import { Miniflare } from "miniflare";
 import knowledgeMigration from "../../migrations/0002_knowledge.sql?raw";
@@ -74,6 +76,50 @@ describe("POST /admin/knowledge/files", () => {
     expect(await response.json()).toEqual({ error: { code: "single_file_required", message: "Single file required" } });
   });
 });
+
+describe("claimed upload route dependency factories", () => {
+  test("does not initialize the object store for a resume_queue claim", async () => {
+    const d = factorySetup({ resumeQueue: true });
+
+    const response = await d.upload();
+
+    expect(response.status).toBe(202);
+    expect(d.objectStoreFor).not.toHaveBeenCalled();
+    expect(d.queueFor).toHaveBeenCalledOnce();
+  });
+
+  test("cleans up a winner when Queue factory initialization fails", async () => {
+    const d = factorySetup({ queueFactoryFails: true });
+
+    const response = await d.upload();
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: { code: "queue_unavailable", message: "Queue unavailable" } });
+    expect(d.repository.failUpload).toHaveBeenCalledWith(expect.any(String), expect.any(String), "queue_send_failed", "2026-07-20T00:00:00.000Z", "claim-token");
+    expect(d.objectStore.deleteOriginal).toHaveBeenCalledWith("claimed.pdf");
+  });
+});
+
+function factorySetup(options: { resumeQueue?: boolean; queueFactoryFails?: boolean }) {
+  const repository = {
+    listDocuments: vi.fn(), getDocument: vi.fn(),
+    claimUpload: vi.fn(async () => options.resumeQueue ? { disposition: "resume_queue" } : { disposition: "winner", token: "claim-token", r2Key: "claimed.pdf", previousR2Key: null }),
+    completeUpload: vi.fn(async () => true), clearUploadClaim: vi.fn(async () => true), failUpload: vi.fn(async () => true),
+  };
+  const objectStore = { putOriginal: vi.fn(async () => undefined), getOriginal: vi.fn(), deleteOriginal: vi.fn(async () => undefined) };
+  const queue = { send: vi.fn(async () => undefined) };
+  const objectStoreFor = vi.fn(() => objectStore);
+  const queueFor = vi.fn(() => { if (options.queueFactoryFails) throw new Error("Queue factory secret"); return queue; });
+  const app = new Hono<{ Bindings: Env }>();
+  registerKnowledgeAdminRoutes(app, {
+    repositoryFor: () => repository as never, objectStoreFor: objectStoreFor as never, queueFor: queueFor as never,
+    safeUrlFetcherFor: vi.fn(), validateFile: async () => ({ kind: "pdf", mimeType: "application/pdf", extension: ".pdf" }), now: () => new Date("2026-07-20T00:00:00Z"),
+  });
+  const upload = () => app.fetch(new Request("https://worker.test/admin/knowledge/files", {
+    method: "POST", headers: { authorization: "Bearer admin", "Idempotency-Key": "factory-boundary" }, body: validForm(),
+  }), { ADMIN_API_TOKEN: "admin" } as Env, {} as ExecutionContext);
+  return { repository, objectStore, objectStoreFor, queueFor, upload };
+}
 
 test("atomically claims a single winner and exposes no job until storage completes in real D1", async () => {
   const mf = new Miniflare({ modules: true, script: "export default { fetch() { return new Response('ok') } }", d1Databases: ["DB"] });

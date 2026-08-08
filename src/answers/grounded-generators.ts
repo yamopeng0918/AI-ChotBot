@@ -50,7 +50,7 @@ type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 type AiBinding = Pick<Ai, "run">;
 export const WORKERS_AI_GROUNDED_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 
-const GROUNDED_RESPONSE_FORMAT = {
+export const WORKERS_AI_GROUNDED_RESPONSE_FORMAT = {
   type: "json_schema",
   json_schema: {
     type: "object",
@@ -135,7 +135,7 @@ export class WorkersAiGroundedGenerator implements GroundedGenerator {
         messages,
         temperature: 0,
         max_tokens: 900,
-        response_format: GROUNDED_RESPONSE_FORMAT,
+        response_format: WORKERS_AI_GROUNDED_RESPONSE_FORMAT,
       });
     } catch (error) {
       const metadata = workersAiErrorMetadata(error);
@@ -154,7 +154,7 @@ export class WorkersAiGroundedGenerator implements GroundedGenerator {
   }
 }
 
-function workersAiDiagnosticCategory(error: unknown): WorkersAiDiagnosticCategory {
+export function workersAiDiagnosticCategory(error: unknown): WorkersAiDiagnosticCategory {
   const message = typeof error === "string"
     ? error
     : error !== null && typeof error === "object"

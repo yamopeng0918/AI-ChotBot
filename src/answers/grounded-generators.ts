@@ -91,11 +91,13 @@ export class WorkersAiGroundedGenerator implements GroundedGenerator {
       | { response?: unknown; choices?: Array<{ message?: { content?: unknown } }> };
     const text = typeof payload === "string"
       ? payload.trim()
-      : typeof payload.response === "string"
-        ? payload.response.trim()
-        : typeof payload.choices?.[0]?.message?.content === "string"
-          ? payload.choices[0].message.content.trim()
-          : "";
+      : payload !== null && typeof payload === "object"
+        ? typeof payload.response === "string"
+          ? payload.response.trim()
+          : typeof payload.choices?.[0]?.message?.content === "string"
+            ? payload.choices[0].message.content.trim()
+            : ""
+        : "";
     if (!text) throw new GroundedProviderError("malformed");
     return { text, model: this.model };
   }

@@ -130,3 +130,30 @@ describe("FallbackGroundedGenerator", () => {
     }
   });
 });
+
+describe("WorkersAiGroundedGenerator", () => {
+  it("accepts a plain string response", async () => {
+    const ai = { run: vi.fn().mockResolvedValue("  {\"answer\":\"A\",\"claims\":[]}  ") };
+
+    await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
+      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.2-3b-instruct" });
+  });
+
+  it("accepts choices message content", async () => {
+    const ai = { run: vi.fn().mockResolvedValue({ choices: [{ message: { content: "  {\"answer\":\"A\",\"claims\":[]}  " } }] }) };
+
+    await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
+      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.2-3b-instruct" });
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["an object without textual content", { response: 123 }],
+  ])("rejects %s as malformed", async (_name, payload) => {
+    const ai = { run: vi.fn().mockResolvedValue(payload) };
+
+    await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
+      .rejects.toMatchObject({ name: "GroundedProviderError", reason: "malformed" });
+  });
+});

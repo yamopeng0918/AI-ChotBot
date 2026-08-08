@@ -622,6 +622,9 @@ describe("processQuestion", () => {
       topic: "The route opens at six.",
       sources: [expect.objectContaining({ url: "https://example.gov/run" })],
     }));
+    expect(d.questions.prepare.mock.invocationCallOrder[0]!).toBeLessThan(
+      knowledgeDrafts.createOrRefresh.mock.invocationCallOrder[0]!,
+    );
     const draft = knowledgeDrafts.createOrRefresh.mock.calls[0]![0] as Record<string, unknown>;
     expect(draft).not.toHaveProperty("groupId"); expect(draft).not.toHaveProperty("userId"); expect(draft).not.toHaveProperty("userKey"); expect(draft).not.toHaveProperty("replyToken"); expect(draft).not.toHaveProperty("question");
     expect(draft.markdown).not.toContain("search online for run time");
@@ -640,6 +643,9 @@ describe("processQuestion", () => {
 
     expect(d.lineClient.reply).toHaveBeenCalledWith(job.replyToken, "The route opens at six.");
     expect(d.questions.complete).toHaveBeenCalledWith(expect.objectContaining({ status: "answered" }), "lease-a");
+    expect(d.questions.prepare.mock.invocationCallOrder[0]!).toBeLessThan(
+      knowledgeDrafts.createOrRefresh.mock.invocationCallOrder[0]!,
+    );
     const draftEvent = events.find((event) => event.event === "knowledge_draft.create");
     expect(draftEvent).toMatchObject({ event: "knowledge_draft.create", outcome: "failed", sourceCount: 1, errorType: "storage_unavailable" });
     expect(Object.keys(draftEvent ?? {}).sort()).toEqual(["errorType", "event", "outcome", "sourceCount", "timestamp"]);
@@ -668,6 +674,38 @@ describe("processQuestion", () => {
     await processQuestion(job, { ...deps({ state: "completed" }), ...services });
 
     expect(knowledgeDrafts.createOrRefresh).not.toHaveBeenCalled();
+  });
+
+  it("keeps casual greetings out of retrieval, web search, grounding, and drafts", async () => {
+    const d = deps();
+    const web = { id: "web:run", sourceType: "web", title: "Official run guide", url: "https://example.gov/run", text: "The route opens at six.", pageNumber: null, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
+    const retriever = { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) };
+    const webSearch = { search: vi.fn().mockResolvedValue([web]) };
+    const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "The route opens at six.", model: "grounded-model", citations: [], usedEvidenceIds: [web.id], validatedClaims: [{ text: "The route opens at six.", evidenceIds: [web.id] }] }) };
+    const knowledgeDrafts = { createOrRefresh: vi.fn().mockResolvedValue(undefined) };
+
+    await expect(processQuestion({ ...job, text: "hello!" }, { ...d, retriever, webSearch, groundedAnswerService, knowledgeDrafts }))
+      .resolves.toEqual({ disposition: "ack", status: "answered" });
+
+    expect(d.answerService.answer).toHaveBeenCalledWith({ question: "hello!", locale: "zh-TW" });
+    expect(retriever.retrieve).not.toHaveBeenCalled();
+    expect(webSearch.search).not.toHaveBeenCalled();
+    expect(groundedAnswerService.answer).not.toHaveBeenCalled();
+    expect(knowledgeDrafts.createOrRefresh).not.toHaveBeenCalled();
+  });
+
+  it("does not create a draft when prepare fencing rejects the answer", async () => {
+    const d = deps(); d.questions.prepare.mockRejectedValueOnce(new Error("stale claim"));
+    const web = { id: "web:run", sourceType: "web", title: "Official run guide", url: "https://example.gov/run", text: "The route opens at six.", pageNumber: null, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
+    const knowledgeDrafts = { createOrRefresh: vi.fn().mockResolvedValue(undefined) };
+    const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "The route opens at six.", model: "grounded-model", citations: [], usedEvidenceIds: [web.id], validatedClaims: [{ text: "The route opens at six.", evidenceIds: [web.id] }] }) };
+
+    await expect(processQuestion({ ...job, text: "search online for run time" }, {
+      ...d, retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) }, webSearch: { search: vi.fn().mockResolvedValue([web]) }, groundedAnswerService, knowledgeDrafts,
+    })).resolves.toEqual({ disposition: "retry", delaySeconds: 1 });
+
+    expect(knowledgeDrafts.createOrRefresh).not.toHaveBeenCalled();
+    expect(d.lineClient.reply).not.toHaveBeenCalled();
   });
 });
 

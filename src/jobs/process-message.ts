@@ -219,6 +219,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
   let text: string;
   let model: string | null;
   let status: Outcome;
+  let groundedDraft: { answer: GroundedAnswer; evidence: KnowledgeEvidence[] } | null = null;
   const { createdAt, expiresAt, leaseToken } = claim;
 
   let userKey: string | null;
@@ -241,7 +242,8 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
       detail: "reused_prepared",
     }, dependencies.now);
   } else {
-    const useKnowledgeAnswering = metricIntent !== "weather" && Boolean(
+    const isCasual = metricIntent === "general" && isClearlyCasual(job.text);
+    const useKnowledgeAnswering = !isCasual && metricIntent !== "weather" && Boolean(
       dependencies.retriever &&
       dependencies.webSearch &&
       dependencies.groundedAnswerService,
@@ -343,12 +345,14 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
         useKnowledgeAnswering
           ? await orchestratedAnswer(job.text, dependencies)
           : {
-              answer: await selectedService.answer({
-                question: job.text,
-                locale: "zh-TW",
-                groupId: job.groupId,
-                defaultLocation,
-              }, observeProvider),
+              answer: isCasual
+                ? await dependencies.answerService.answer({ question: job.text, locale: "zh-TW" })
+                : await selectedService.answer({
+                    question: job.text,
+                    locale: "zh-TW",
+                    groupId: job.groupId,
+                    defaultLocation,
+                  }, observeProvider),
               evidence: [],
             };
       const answer = orchestrated.answer;
@@ -365,7 +369,7 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
         durationMs: safeElapsedMs(providerStartedAt, dependencies.now),
       }, dependencies.now);
       if (isGroundedAnswer(answer) && dependencies.knowledgeDrafts) {
-        await createKnowledgeDraftSafe(answer, orchestrated.evidence, dependencies);
+        groundedDraft = { answer, evidence: orchestrated.evidence };
       }
     } catch (error) {
       text = PROVIDER_UNAVAILABLE_TEXT;
@@ -405,6 +409,9 @@ export async function processQuestion(job: QuestionJob, dependencies: ProcessDep
         intent: metricIntent,
         model,
       }, dependencies.now);
+      if (groundedDraft && dependencies.knowledgeDrafts) {
+        await createKnowledgeDraftSafe(groundedDraft.answer, groundedDraft.evidence, dependencies);
+      }
     } catch {
       emit(dependencies.logger, {
         event: "storage.prepare.failed",

@@ -1,4 +1,20 @@
+import type { MiddlewareHandler } from "hono";
+
+import type { Env } from "../config";
+
 const encoder = new TextEncoder();
+
+export function requireKnowledgeAdmin(): MiddlewareHandler<{ Bindings: Env }> {
+  return async (context, next) => {
+    const authenticated = await verifyAdminBearer(
+      context.req.header("authorization"), context.env.ADMIN_API_TOKEN,
+    );
+    if (!authenticated) {
+      return context.json({ error: { code: "unauthorized", message: "Unauthorized" } }, 401);
+    }
+    await next();
+  };
+}
 
 export async function verifyAdminBearer(
   header: string | undefined,

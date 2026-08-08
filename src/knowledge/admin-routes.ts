@@ -1,7 +1,7 @@
-import type { Context, Hono, MiddlewareHandler } from "hono";
+import type { Context, Hono } from "hono";
 
 import type { Env } from "../config";
-import { verifyAdminBearer } from "./admin-auth";
+import { requireKnowledgeAdmin } from "./admin-auth";
 import { ClaimedUploadError, finalizeClaimedUpload } from "./claimed-upload";
 import type { IngestionJobDetails, KnowledgeRepository } from "./repository";
 import { KnowledgeFileError, validateKnowledgeFile, type ValidatedKnowledgeFile } from "./file-validation";
@@ -25,15 +25,7 @@ export function registerKnowledgeAdminRoutes(
   dependencies: KnowledgeUploadDependencies,
 ): void {
   const { repositoryFor } = dependencies;
-  const requireAdmin: MiddlewareHandler<{ Bindings: Env }> = async (context, next) => {
-    const authenticated = await verifyAdminBearer(
-      context.req.header("authorization"), context.env.ADMIN_API_TOKEN,
-    );
-    if (!authenticated) {
-      return context.json({ error: { code: "unauthorized", message: "Unauthorized" } }, 401);
-    }
-    await next();
-  };
+  const requireAdmin = requireKnowledgeAdmin();
 
   app.get("/admin/knowledge/documents", requireAdmin, async (context) => {
     try {
@@ -210,7 +202,7 @@ function claimedUploadFailure(context: Context, error: unknown) {
   return context.json({ error: { code: "internal_error", message: "Internal error" } }, 500);
 }
 
-async function stableUuid(namespace: string, key: string): Promise<string> {
+export async function stableUuid(namespace: string, key: string): Promise<string> {
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(namespace + key))).slice(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x40; bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const value = hex(bytes); return `${value.slice(0,8)}-${value.slice(8,12)}-${value.slice(12,16)}-${value.slice(16,20)}-${value.slice(20)}`;

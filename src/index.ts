@@ -32,6 +32,7 @@ import {
 import { registerKnowledgeAdminRoutes, type KnowledgeAdminRepository } from "./knowledge/admin-routes";
 import { KnowledgeRepository } from "./knowledge/repository";
 import { KnowledgeDraftRepository } from "./knowledge/drafts";
+import { registerKnowledgeDraftRoutes, type KnowledgeDraftReviewRepository } from "./knowledge/draft-routes";
 import { R2KnowledgeObjectStore, type KnowledgeObjectStore } from "./knowledge/storage";
 import type { ValidatedKnowledgeFile } from "./knowledge/file-validation";
 import { TavilySafeUrlFetcher, type SafeUrlFetcher } from "./knowledge/url-safety";
@@ -69,6 +70,7 @@ export type WorkerDependencies = {
   webSearch?: WebSearchService | ((env: Env) => WebSearchService);
   groundedAnswerService?: GroundedDependency | ((env: Env) => GroundedDependency);
   knowledgeDrafts?: KnowledgeDraftDependency | ((env: Env) => KnowledgeDraftDependency);
+  draftReviews?: KnowledgeDraftReviewRepository | ((env: Env) => KnowledgeDraftReviewRepository);
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -109,6 +111,15 @@ const ingestionFor = (env: Env): IngestionDependencies => {
     embeddings: new EmbeddingService(env.AI), vectors: new KnowledgeVectorStore(env.VECTORIZE, (documentId, version) => repository.listVectorIds(documentId, version)), now: overrides.now };
 };
 registerKnowledgeAdminRoutes(app, { repositoryFor: knowledgeFor, objectStoreFor, queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE, validateFile: overrides.validateFile, safeUrlFetcherFor, now: overrides.now });
+const draftReviewsFor = (env: Env): KnowledgeDraftReviewRepository =>
+  typeof overrides.draftReviews === "function" ? overrides.draftReviews(env) : overrides.draftReviews ?? new KnowledgeDraftRepository(env.DB);
+registerKnowledgeDraftRoutes(app, {
+  draftsFor: draftReviewsFor,
+  knowledgeFor,
+  objectStoreFor,
+  queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE,
+  now: overrides.now,
+});
 
 app.get("/health", (context) => context.json({ status: "ok" }));
 

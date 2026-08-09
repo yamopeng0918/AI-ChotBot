@@ -606,13 +606,14 @@ describe("processQuestion", () => {
   it("creates a review-only draft from a newly grounded web answer without question identity fields", async () => {
     const d = deps();
     const web = { id: "web:run", sourceType: "web", title: "Official run guide", url: "https://example.gov/run", text: "The route opens at six.", pageNumber: null, sectionPath: null, paragraphIndex: null, retrievedAt: "2026-07-18T00:00:00.000Z", score: .9 } as const;
+    const discarded = { ...web, id: "web:discarded", title: "Discarded source title", url: "https://discarded.example/run", text: "Discarded source text." } as const;
     const knowledgeDrafts = { createOrRefresh: vi.fn().mockResolvedValue(undefined) };
     const groundedAnswerService = { answer: vi.fn().mockResolvedValue({ text: "The route opens at six.", model: "grounded-model", citations: [], usedEvidenceIds: [web.id], validatedClaims: [{ text: "The route opens at six.", evidenceIds: [web.id] }] }) };
 
     await expect(processQuestion({ ...job, text: "search online for run time" }, {
       ...d,
       retriever: { retrieve: vi.fn().mockResolvedValue({ evidence: [], insufficient: true, topScore: null }) },
-      webSearch: { search: vi.fn().mockResolvedValue([web]) },
+      webSearch: { search: vi.fn().mockResolvedValue([web, discarded]) },
       groundedAnswerService,
       knowledgeDrafts,
     })).resolves.toEqual({ disposition: "ack", status: "answered" });
@@ -628,6 +629,9 @@ describe("processQuestion", () => {
     const draft = knowledgeDrafts.createOrRefresh.mock.calls[0]![0] as Record<string, unknown>;
     expect(draft).not.toHaveProperty("groupId"); expect(draft).not.toHaveProperty("userId"); expect(draft).not.toHaveProperty("userKey"); expect(draft).not.toHaveProperty("replyToken"); expect(draft).not.toHaveProperty("question");
     expect(draft.markdown).not.toContain("search online for run time");
+    expect(JSON.stringify(draft)).not.toContain(discarded.title);
+    expect(JSON.stringify(draft)).not.toContain(discarded.url);
+    expect(JSON.stringify(draft)).not.toContain(discarded.text);
   });
 
   it("keeps LINE delivery and completion successful when draft storage fails", async () => {

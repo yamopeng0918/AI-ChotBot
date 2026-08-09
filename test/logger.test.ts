@@ -174,6 +174,28 @@ describe("structured telemetry logger", () => {
     });
   });
 
+  it("projects only the discarded claim count for successful grounded validation", () => {
+    const write = vi.fn();
+    const logger = createConsoleTelemetryLogger(write);
+    logger.emit({
+      event: "answer.grounded.validation", stage: "answer", outcome: "success",
+      reason: "validated", attempt: 1, model: "grounded-model", discardedClaimCount: 2,
+      timestamp: "2026-07-25T10:00:00.000Z",
+      question: "private question", claim: "private claim", evidence: "private evidence",
+      url: "https://private.example", token: "private token",
+    } as unknown as TelemetryEvent);
+
+    expect(write).toHaveBeenCalledWith({
+      event: "answer.grounded.validation", stage: "answer", outcome: "success",
+      reason: "validated", attempt: 1, model: "grounded-model", discardedClaimCount: 2,
+      timestamp: "2026-07-25T10:00:00.000Z",
+    });
+    const serialized = JSON.stringify(write.mock.calls);
+    for (const forbidden of ["private question", "private claim", "private evidence", "https://private.example", "private token", "\"question\":", "\"claim\":", "\"evidence\":", "\"url\":", "\"token\":"]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
   it("does not throw when projection or writing telemetry fails", () => {
     const throwingWriter = createConsoleTelemetryLogger(() => {
       throw new Error("write failed");

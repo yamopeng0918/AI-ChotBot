@@ -159,6 +159,7 @@ function projectEvent(event: TelemetryEvent): TelemetryRecord {
         attempt: event.attempt,
         timestamp: event.timestamp,
         ...(event.model !== undefined ? { model: event.model } : {}),
+        ...(event.discardedClaimCount !== undefined ? { discardedClaimCount: event.discardedClaimCount } : {}),
       };
     }
     return {

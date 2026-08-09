@@ -29,6 +29,14 @@ describe("intent router", () => {
     expect(classifyIntent(question)).toBe("general");
   });
 
+  it.each([
+    "本週適合跑步的訓練菜單怎麼安排？",
+    "明天適合跑步的課表怎麼排？",
+    "本週適合跑步的跑量是多少？",
+  ])("keeps time-specific training plans out of weather: %s", (question) => {
+    expect(classifyIntent(question)).toBe("general");
+  });
+
   it("extracts only the city from contextual running weather", () => {
     expect(extractWeatherLocationQuery("請問斗六市明天適合跑步嗎？")).toBe("斗六市");
     expect(extractWeatherLocationQuery("台北今天適合去跑步嗎？")).toBe("台北");

@@ -10,7 +10,7 @@ describe("OpenRouterGroundedGenerator", () => {
   it("requests strict JSON from the configured model", async () => {
     const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => Response.json({
       model: "actual/model",
-      choices: [{ message: { content: "{\"answer\":\"A\",\"claims\":[]}" } }],
+      choices: [{ message: { content: "{\"sentenceIds\":[\"s0\"]}" } }],
     }));
     const result = await new OpenRouterGroundedGenerator(fetcher, "key", "configured/model")
       .generate([{ role: "system", content: "rules" }]);
@@ -54,7 +54,7 @@ describe("FallbackGroundedGenerator", () => {
   });
 
   it("uses Workers AI after both OpenRouter layers fail", async () => {
-    const ai = { run: vi.fn().mockResolvedValue({ response: "{\"answer\":\"A\",\"claims\":[]}" }) };
+    const ai = { run: vi.fn().mockResolvedValue({ response: "{\"sentenceIds\":[\"s0\"]}" }) };
     const chain = new FallbackGroundedGenerator([
       { provider: "openrouter", role: "primary", model: "p", generator: { generate: vi.fn().mockRejectedValue(new Error("p")) } },
       { provider: "openrouter", role: "fallback", model: "f", generator: { generate: vi.fn().mockRejectedValue(new Error("f")) } },
@@ -72,24 +72,13 @@ describe("FallbackGroundedGenerator", () => {
         json_schema: {
           type: "object",
           additionalProperties: false,
-          required: ["claims"],
+          required: ["sentenceIds"],
           properties: {
-            claims: {
+            sentenceIds: {
               type: "array",
               minItems: 1,
-              items: {
-                type: "object",
-                additionalProperties: false,
-                required: ["text", "evidenceIds"],
-                properties: {
-                  text: { type: "string", minLength: 1 },
-                  evidenceIds: {
-                    type: "array",
-                    minItems: 1,
-                    items: { type: "string" },
-                  },
-                },
-              },
+              maxItems: 3,
+              items: { type: "string", minLength: 1 },
             },
           },
         },
@@ -291,20 +280,20 @@ describe("WorkersAiGroundedGenerator", () => {
   });
 
   it("accepts a plain string response", async () => {
-    const ai = { run: vi.fn().mockResolvedValue("  {\"answer\":\"A\",\"claims\":[]}  ") };
+    const ai = { run: vi.fn().mockResolvedValue("  {\"sentenceIds\":[\"s0\"]}  ") };
 
     await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
-      .resolves.toEqual({ text: "{\"answer\":\"A\",\"claims\":[]}", model: "@cf/meta/llama-3.1-8b-instruct-fast" });
+      .resolves.toEqual({ text: "{\"sentenceIds\":[\"s0\"]}", model: "@cf/meta/llama-3.1-8b-instruct-fast" });
   });
 
   it("serializes a structured response object for the unchanged downstream parser", async () => {
     const ai = { run: vi.fn().mockResolvedValue({
-      response: { answer: "A", claims: [{ text: "A", evidenceIds: ["e1"] }] },
+      response: { sentenceIds: ["s0"] },
     }) };
 
     await expect(new WorkersAiGroundedGenerator(ai).generate([{ role: "user", content: "q" }]))
       .resolves.toEqual({
-        text: "{\"answer\":\"A\",\"claims\":[{\"text\":\"A\",\"evidenceIds\":[\"e1\"]}]}",
+        text: "{\"sentenceIds\":[\"s0\"]}",
         model: "@cf/meta/llama-3.1-8b-instruct-fast",
       });
   });

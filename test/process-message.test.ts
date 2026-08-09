@@ -550,12 +550,16 @@ describe("processQuestion", () => {
   it("routes weather questions to the weather service and records a metric", async () => {
     const metrics = { record: vi.fn().mockResolvedValue(undefined) };
     const weatherService = { answer: vi.fn().mockResolvedValue({ text: "台北現在 31°C，局部多雲。", model: "open-meteo" }) };
-    const d = { ...deps(), weatherService, metrics };
-    const weatherJob = { ...job, text: "今天台北天氣如何？" };
+    const retriever = { retrieve: vi.fn() }, webSearch = { search: vi.fn() }, groundedAnswerService = { answer: vi.fn() };
+    const d = { ...deps(), weatherService, metrics, retriever, webSearch, groundedAnswerService };
+    const weatherJob = { ...job, text: "請問斗六市明天適合跑步嗎？" };
 
     await expect(processQuestion(weatherJob, d)).resolves.toEqual({ disposition: "ack", status: "answered" });
     expect(weatherService.answer).toHaveBeenCalledOnce();
     expect(d.answerService.answer).not.toHaveBeenCalled();
+    expect(retriever.retrieve).not.toHaveBeenCalled();
+    expect(webSearch.search).not.toHaveBeenCalled();
+    expect(groundedAnswerService.answer).not.toHaveBeenCalled();
     expect(d.lineClient.reply).toHaveBeenCalledWith(weatherJob.replyToken, "台北現在 31°C，局部多雲。");
     expect(metrics.record).toHaveBeenCalledWith(expect.objectContaining({ intent: "weather", status: "answered", model: "open-meteo" }));
   });

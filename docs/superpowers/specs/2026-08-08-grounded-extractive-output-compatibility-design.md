@@ -52,3 +52,7 @@ The progressive run proved every schema through `nonempty` succeeds and only the
 ## Approved Workers AI-first grounded ordering
 
 Production smoke proved Workers AI structured generation now completes, while the first output can still fail strict entailment and the second corrective generation can be intercepted by a malformed OpenRouter success. Make Workers AI the first grounded generator on every validation attempt. Use configured OpenRouter models only when the Workers AI call itself fails. Preserve the two-attempt validation loop, correction prompt, all strict validation gates, configured OpenRouter model order, telemetry, answer rendering, draft review, and publication behavior.
+
+## Approved claims-only answer derivation
+
+Workers AI-first smoke proved both calls complete but the correction can still fail because the provider's redundant `answer` disagrees with its claims. Make validated claims the sole content source. Request only `claims` from Workers AI; accept both new claims-only output and the legacy OpenRouter `{ answer, claims }` shape, but ignore any provider `answer` value. After every claim passes citation, location, conflict, duplicate-ID, and strict entailment validation, deterministically join claim texts with one space for LINE output and draft content. Keep two attempts, provider failure fallback, source rendering, human approval, and publication gates unchanged.

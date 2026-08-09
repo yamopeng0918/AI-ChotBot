@@ -293,3 +293,32 @@ Construct the list with Workers AI first and role `primary`; append configured O
 - [ ] **Step 4: Verify, review, commit, deploy, and smoke**
 
 Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent review, commit `fix: prefer Workers AI for grounded retries`, deploy, send one ordinary running question, and verify corrective validation uses Workers AI twice before any OpenRouter fallback.
+
+### Task 10: Derive the answer only from validated claims
+
+**Files:**
+- Modify: `src/answers/grounded-generators.ts`
+- Modify: `src/answers/grounded.ts`
+- Modify: `test/answers/grounded-generators.test.ts`
+- Modify: `test/answers/grounded.test.ts`
+
+**Interfaces:**
+- Consumes: provider JSON with `claims` and optional ignored legacy `answer`.
+- Produces: the unchanged `GroundedAnswer` API whose text is built only from validated claim text.
+
+- [ ] **Step 1: Write RED contract and safety tests**
+
+Assert the Workers AI schema requires only `claims` and has no `answer` property. Assert claims-only JSON is accepted. Assert a malicious or mismatched legacy `answer` is ignored and never appears in rendered text, while claims still must pass every existing validation gate. Update prompt assertions to require claims-only output and deterministic application-side answer construction.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/answers/grounded-generators.test.ts test/answers/grounded.test.ts`
+Expected: schema/prompt/claims-only tests fail because current parser requires and renders provider `answer`.
+
+- [ ] **Step 3: Implement claims as the sole source**
+
+Remove `answer` from `WORKERS_AI_GROUNDED_RESPONSE_FORMAT`. Change the prompt to request only claims. Parse exactly `claims` or legacy `answer,claims`, discard the answer immediately, validate claims exactly as before, and render `claims.map(text).join(" ")`. Stop emitting `answer_claim_mismatch`; retain the historical union value only if needed for telemetry compatibility.
+
+- [ ] **Step 4: Verify, review, commit, deploy, and smoke**
+
+Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent safety review, commit `fix: derive grounded answers from validated claims`, deploy, send one ordinary running question, and verify a validated Workers AI answer produces HTTPS citations and a pending draft without OpenRouter.

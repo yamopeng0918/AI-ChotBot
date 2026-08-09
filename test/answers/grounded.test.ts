@@ -35,6 +35,29 @@ describe("GroundedAnswerService", () => {
     expect(answer.usedEvidenceIds).toEqual(["kb-1"]);
   });
 
+  it("accepts claims-only JSON and derives the rendered answer from validated claims", async () => {
+    const generated = JSON.stringify({ claims: [{ text: file.text, evidenceIds: ["kb-1"] }] });
+    const answer = await new GroundedAnswerService({
+      generate: vi.fn().mockResolvedValue({ text: generated, model: "m" }),
+    }).answer({ question: "q", evidence: [file], webUnavailable: false });
+
+    expect(answer.text).toContain(`${file.text}\n\nSources:`);
+    expect(answer.usedEvidenceIds).toEqual(["kb-1"]);
+  });
+
+  it("ignores a legacy provider answer and never renders its unvalidated content", async () => {
+    const generated = JSON.stringify({
+      answer: "SECRET UNVALIDATED PROVIDER ANSWER",
+      claims: [{ text: file.text, evidenceIds: ["kb-1"] }],
+    });
+    const answer = await new GroundedAnswerService({
+      generate: vi.fn().mockResolvedValue({ text: generated, model: "m" }),
+    }).answer({ question: "q", evidence: [file], webUnavailable: false });
+
+    expect(answer.text).toContain(`${file.text}\n\nSources:`);
+    expect(answer.text).not.toContain("SECRET UNVALIDATED PROVIDER ANSWER");
+  });
+
   it.each([
     ["開放報名。", "不開放報名！"], ["可以參加！", "不可以參加。"], ["可以參加。", "不能參加；"],
     ["有補給站。", "沒有補給站。"], ["有補給站！", "無補給站。"],
@@ -146,14 +169,15 @@ describe("GroundedAnswerService", () => {
     expect(answer.text).toBe(INSUFFICIENT_EVIDENCE_TEXT);
   });
 
-  it("instructs the model to emit extractive claims and an exact joined answer", async () => {
+  it("instructs the model to emit claims only for application-side answer construction", async () => {
     const generate = vi.fn().mockResolvedValue({ text: valid, model: "m" });
     await new GroundedAnswerService({ generate }, async () => true)
       .answer({ question: "When and where?", evidence: [file, page, web], webUnavailable: false });
 
     const systemPrompt = generate.mock.calls[0]![0][0].content;
     expect(systemPrompt).toContain("Each claim must be one complete verbatim sentence from a cited evidence text; do not translate or paraphrase it.");
-    expect(systemPrompt).toContain("The answer must be the claims joined in order with exactly one space.");
+    expect(systemPrompt).toContain('Return strict JSON only: {"claims"');
+    expect(systemPrompt).toContain("The application constructs the answer from validated claims");
   });
 
   it.each([
@@ -172,7 +196,6 @@ describe("GroundedAnswerService", () => {
 
   it.each([
     ["malformed output", "not JSON", [file], async () => true, "parse_invalid"],
-    ["answer mismatch", JSON.stringify({ answer: "Other claim.", claims: [{ text: "Claim.", evidenceIds: ["kb-1"] }] }), [file], async () => true, "answer_claim_mismatch"],
     ["invalid evidence ID", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: ["missing"] }] }), [file], async () => true, "citation_invalid"],
     ["duplicate evidence ID", JSON.stringify({ answer: file.text, claims: [{ text: file.text, evidenceIds: ["kb-1", "kb-1"] }] }), [file], async () => true, "citation_invalid"],
     ["unrenderable citation location", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: ["kb-1"] }] }), [{ ...file, text: "Claim.", pageNumber: null, sectionPath: null }], async () => true, "location_invalid"],

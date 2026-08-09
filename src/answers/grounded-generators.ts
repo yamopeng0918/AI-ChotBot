@@ -55,9 +55,8 @@ export const WORKERS_AI_GROUNDED_RESPONSE_FORMAT = {
   json_schema: {
     type: "object",
     additionalProperties: false,
-    required: ["answer", "claims"],
+    required: ["claims"],
     properties: {
-      answer: { type: "string", minLength: 1 },
       claims: {
         type: "array",
         minItems: 1,

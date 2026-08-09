@@ -37,6 +37,16 @@ it("enables production logs and explicitly disables phase-one traces", () => {
   });
 });
 
+it("does not expose the temporary Workers AI diagnostics endpoint", async () => {
+  const response = await createWorker().fetch(
+    new Request("https://worker.test/admin/diagnostics/workers-ai-probes", { method: "POST" }),
+    {} as Env,
+    {} as ExecutionContext,
+  );
+
+  expect(response.status).toBe(404);
+});
+
 describe("createWorker repository injection", () => {
   it("uses injected knowledge-answering factories without production bindings", async () => {
     const repository = { claim: vi.fn().mockResolvedValue({ state: "claimed", leaseToken: "lease", leaseUntil: "2026-07-18T00:01:00.000Z", createdAt: job.receivedAt, expiresAt: "2026-08-18T00:00:00.000Z" }), prepare: vi.fn(), complete: vi.fn(), release: vi.fn(), purgeExpired: vi.fn() };

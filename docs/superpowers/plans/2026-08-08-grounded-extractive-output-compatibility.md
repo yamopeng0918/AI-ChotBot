@@ -266,3 +266,30 @@ Remove only `uniqueItems: true` from `WORKERS_AI_GROUNDED_RESPONSE_FORMAT`. Dele
 - [ ] **Step 4: Verify, review, commit, deploy, and smoke**
 
 Run focused tests, full tests, typecheck, Wrangler dry-run, and an independent security/requirements review. Commit `fix: remove incompatible Workers AI schema keyword`, deploy, send one ordinary running question, and confirm Workers AI completes or reaches downstream validation rather than immediate provider failure. Confirm `/admin/diagnostics/workers-ai-probes` returns 404.
+
+### Task 9: Prefer Workers AI for every grounded validation attempt
+
+**Files:**
+- Modify: `src/index.ts`
+- Modify: `test/worker-dependencies.test.ts`
+
+**Interfaces:**
+- Consumes: the existing `FallbackGroundedGenerator` entry list and two-attempt `GroundedAnswerService` loop.
+- Produces: production order Workers AI, OpenRouter configured primary, then optional distinct OpenRouter fallback.
+
+- [ ] **Step 1: Write RED production-wiring tests**
+
+Assert a successful Workers AI result never calls OpenRouter. Add a Workers AI rejection case asserting OpenRouter is then called in configured order and can answer. Add a corrective-validation case asserting both validation attempts start with Workers AI, so the second call receives the correction message without OpenRouter interception.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/worker-dependencies.test.ts`
+Expected: Workers-success tests fail because current production order calls OpenRouter first.
+
+- [ ] **Step 3: Reorder only the production entry list**
+
+Construct the list with Workers AI first and role `primary`; append configured OpenRouter primary as fallback, then append a distinct configured OpenRouter fallback as terminal. Do not change generator classes, validation loop, prompts, schemas, or provider failure classification.
+
+- [ ] **Step 4: Verify, review, commit, deploy, and smoke**
+
+Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent review, commit `fix: prefer Workers AI for grounded retries`, deploy, send one ordinary running question, and verify corrective validation uses Workers AI twice before any OpenRouter fallback.

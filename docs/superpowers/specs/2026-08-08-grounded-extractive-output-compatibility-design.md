@@ -48,3 +48,7 @@ The first controlled run proved baseline and minimal JSON Schema succeed while t
 ## Approved production compatibility fix
 
 The progressive run proved every schema through `nonempty` succeeds and only the final `uniqueItems: true` variant fails. Remove `uniqueItems` only from the Workers AI provider request schema. Do not weaken application validation: `GroundedAnswerService` continues rejecting duplicate evidence IDs as `citation_invalid` before rendering or draft creation. After production verification, remove the temporary authenticated probe route, runner, dependency injection, and probe tests so no diagnostic inference endpoint remains deployed.
+
+## Approved Workers AI-first grounded ordering
+
+Production smoke proved Workers AI structured generation now completes, while the first output can still fail strict entailment and the second corrective generation can be intercepted by a malformed OpenRouter success. Make Workers AI the first grounded generator on every validation attempt. Use configured OpenRouter models only when the Workers AI call itself fails. Preserve the two-attempt validation loop, correction prompt, all strict validation gates, configured OpenRouter model order, telemetry, answer rendering, draft review, and publication behavior.

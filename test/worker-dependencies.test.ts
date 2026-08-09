@@ -193,10 +193,7 @@ describe("grounded provider production wiring", () => {
         groundedMessages.push(input.messages ?? []);
         if (options.workersAiFails) throw new Error("workers unavailable");
         return {
-          response: workersAiResponses.shift() ?? JSON.stringify({
-            answer: "The event is open.",
-            claims: [{ text: "The event is open.", evidenceIds: [evidenceId] }],
-          }),
+          response: workersAiResponses.shift() ?? JSON.stringify({ sentenceIds: ["s0"] }),
         };
       }),
     };
@@ -296,21 +293,15 @@ describe("grounded provider production wiring", () => {
   });
 
   it("sends the corrective validation attempt to Workers AI before OpenRouter", async () => {
-    const invalid = JSON.stringify({
-      answer: "A paraphrased event statement.",
-      claims: [{ text: "A paraphrased event statement.", evidenceIds: ["chunk:" + "a".repeat(64)] }],
-    });
-    const valid = JSON.stringify({
-      answer: "The event is open.",
-      claims: [{ text: "The event is open.", evidenceIds: ["chunk:" + "a".repeat(64)] }],
-    });
+    const invalid = JSON.stringify({ sentenceIds: ["missing"] });
+    const valid = JSON.stringify({ sentenceIds: ["s0"] });
     const { groundedMessages, openRouterBodies, repository } = await runGroundedQuestion({
       fallbackModel: "fallback/model",
       workersAiResponses: [invalid, valid],
     });
 
     expect(groundedMessages).toHaveLength(2);
-    expect(JSON.stringify(groundedMessages[1])).toContain("corrected strict JSON");
+    expect(JSON.stringify(groundedMessages[1])).toContain("1 to 3 unique sentenceIds");
     expect(openRouterBodies).toEqual([]);
     expect(repository.prepare).toHaveBeenCalledWith(
       expect.objectContaining({ status: "answered", model: "@cf/meta/llama-3.1-8b-instruct-fast" }),

@@ -179,7 +179,7 @@ describe("structured telemetry logger", () => {
     const logger = createConsoleTelemetryLogger(write);
     logger.emit({
       event: "answer.grounded.validation", stage: "answer", outcome: "success",
-      reason: "validated", attempt: 1, model: "grounded-model", discardedClaimCount: 2,
+      reason: "validated", attempt: 1, model: "grounded-model", selectedSentenceCount: 3, discardedClaimCount: 2,
       timestamp: "2026-07-25T10:00:00.000Z",
       question: "private question", claim: "private claim", evidence: "private evidence",
       url: "https://private.example", token: "private token",
@@ -187,7 +187,7 @@ describe("structured telemetry logger", () => {
 
     expect(write).toHaveBeenCalledWith({
       event: "answer.grounded.validation", stage: "answer", outcome: "success",
-      reason: "validated", attempt: 1, model: "grounded-model", discardedClaimCount: 2,
+      reason: "validated", attempt: 1, model: "grounded-model", selectedSentenceCount: 3, discardedClaimCount: 2,
       timestamp: "2026-07-25T10:00:00.000Z",
     });
     const serialized = JSON.stringify(write.mock.calls);

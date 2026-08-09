@@ -174,6 +174,7 @@ describe("GroundedAnswerService", () => {
     ["malformed output", "not JSON", [file], async () => true, "parse_invalid"],
     ["answer mismatch", JSON.stringify({ answer: "Other claim.", claims: [{ text: "Claim.", evidenceIds: ["kb-1"] }] }), [file], async () => true, "answer_claim_mismatch"],
     ["invalid evidence ID", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: ["missing"] }] }), [file], async () => true, "citation_invalid"],
+    ["duplicate evidence ID", JSON.stringify({ answer: file.text, claims: [{ text: file.text, evidenceIds: ["kb-1", "kb-1"] }] }), [file], async () => true, "citation_invalid"],
     ["unrenderable citation location", JSON.stringify({ answer: "Claim.", claims: [{ text: "Claim.", evidenceIds: ["kb-1"] }] }), [{ ...file, text: "Claim.", pageNumber: null, sectionPath: null }], async () => true, "location_invalid"],
     ["conflicting cited evidence", JSON.stringify({ answer: "The event is in 2026.", claims: [{ text: "The event is in 2026.", evidenceIds: ["a", "b"] }] }), [{ ...file, id: "a", text: "The event is in 2025." }, { ...file, id: "b", text: "The event is in 2026." }], async () => true, "conflict"],
     ["strict entailment failure", JSON.stringify({ answer: "Wrong.", claims: [{ text: "Wrong.", evidenceIds: ["kb-1"] }] }), [file], async () => false, "entailment_failed"],

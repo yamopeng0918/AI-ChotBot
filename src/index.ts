@@ -44,11 +44,6 @@ import { KnowledgeVectorStore } from "./knowledge/vector-store";
 import type { IngestionJobMessage } from "./knowledge/types";
 import { KnowledgeRetriever } from "./retrieval/retriever";
 import { TavilySearchService, type WebSearchService } from "./search/tavily";
-import { registerProviderDiagnosticRoutes } from "./diagnostics/provider-routes";
-import {
-  runWorkersAiProbes,
-  type WorkersAiProbeRunner,
-} from "./diagnostics/workers-ai-probes";
 
 type QuestionsDependency = ProcessDependencies["questions"] & Pick<QuestionsRepository, "purgeExpired">;
 type QuestionsFactory = (env: Env) => QuestionsDependency;
@@ -77,7 +72,6 @@ export type WorkerDependencies = {
   groundedAnswerService?: GroundedDependency | ((env: Env) => GroundedDependency);
   knowledgeDrafts?: KnowledgeDraftDependency | ((env: Env) => KnowledgeDraftDependency);
   draftReviews?: KnowledgeDraftReviewRepository | ((env: Env) => KnowledgeDraftReviewRepository);
-  workersAiProbeRunner?: WorkersAiProbeRunner | ((env: Env) => WorkersAiProbeRunner);
 };
 
 export function createWorker(overrides: WorkerDependencies = {}) {
@@ -127,11 +121,6 @@ registerKnowledgeDraftRoutes(app, {
   queueFor: (env) => overrides.ingestionQueue ?? env.INGESTION_QUEUE,
   now: overrides.now,
 });
-registerProviderDiagnosticRoutes(app, (env) => {
-  if (typeof overrides.workersAiProbeRunner === "function") return overrides.workersAiProbeRunner(env);
-  return overrides.workersAiProbeRunner ?? { run: () => runWorkersAiProbes(env.AI) };
-});
-
 app.get("/health", (context) => context.json({ status: "ok" }));
 
 app.post("/webhooks/line", async (context) => {

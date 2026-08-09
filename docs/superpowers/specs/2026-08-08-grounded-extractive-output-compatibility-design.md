@@ -44,3 +44,7 @@ Stop expanding opaque-error inspection. Add an authenticated `POST /admin/diagno
 ## Approved progressive-schema probe addendum
 
 The first controlled run proved baseline and minimal JSON Schema succeed while the production grounded schema fails. Replace the single jump to the production schema with four cumulative fixed probes: `nested_shape` adds only the nested answer/claims/evidenceIds types; `closed_required` adds required fields and closed objects; `nonempty` adds `minLength` and `minItems`; `grounded_schema` finally adds `uniqueItems`. Keep the original baseline and simple JSON probes. This isolates the first incompatible constraint group without changing the production answer path or exposing provider content.
+
+## Approved production compatibility fix
+
+The progressive run proved every schema through `nonempty` succeeds and only the final `uniqueItems: true` variant fails. Remove `uniqueItems` only from the Workers AI provider request schema. Do not weaken application validation: `GroundedAnswerService` continues rejecting duplicate evidence IDs as `citation_invalid` before rendering or draft creation. After production verification, remove the temporary authenticated probe route, runner, dependency injection, and probe tests so no diagnostic inference endpoint remains deployed.

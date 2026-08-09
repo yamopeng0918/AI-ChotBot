@@ -233,3 +233,36 @@ Define immutable cumulative schema constants using the same fixed synthetic mess
 - [ ] **Step 4: Verify, review, commit, deploy, and invoke once**
 
 Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent review, commit `chore: isolate grounded schema compatibility`, deploy, invoke once, and use the first failed progressive probe as the root-cause boundary.
+
+### Task 8: Remove the incompatible provider keyword and temporary probes
+
+**Files:**
+- Modify: `src/answers/grounded-generators.ts`
+- Modify: `src/index.ts`
+- Modify: `test/answers/grounded-generators.test.ts`
+- Modify: `test/answers/grounded.test.ts`
+- Delete: `src/diagnostics/workers-ai-probes.ts`
+- Delete: `src/diagnostics/provider-routes.ts`
+- Delete: `test/diagnostics/workers-ai-probes.test.ts`
+- Delete: `test/diagnostics/provider-routes.test.ts`
+
+**Interfaces:**
+- Consumes: the existing Workers AI structured request and strict `GroundedAnswerService` validator.
+- Produces: the unchanged production grounded answer API without `uniqueItems` in the provider schema and without a diagnostic HTTP endpoint.
+
+- [ ] **Step 1: Write RED regression tests**
+
+Change the provider request assertion to require every existing schema constraint except `uniqueItems`. Add a grounded validation case with duplicate evidence IDs and assert both attempts produce metadata-only `citation_invalid`. Keep endpoint-removal verification for the implementation step because deletion is the requirement itself.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/answers/grounded-generators.test.ts test/answers/grounded.test.ts`
+Expected: provider request assertion fails while the new duplicate-ID validation test already passes, proving defense-in-depth exists before removing the provider keyword.
+
+- [ ] **Step 3: Implement the minimal compatibility fix and cleanup**
+
+Remove only `uniqueItems: true` from `WORKERS_AI_GROUNDED_RESPONSE_FORMAT`. Delete the two diagnostics modules and tests, remove their imports/registration/dependency override from `src/index.ts`, and leave the safe provider failure telemetry plus all ordinary answer/fallback validation unchanged.
+
+- [ ] **Step 4: Verify, review, commit, deploy, and smoke**
+
+Run focused tests, full tests, typecheck, Wrangler dry-run, and an independent security/requirements review. Commit `fix: remove incompatible Workers AI schema keyword`, deploy, send one ordinary running question, and confirm Workers AI completes or reaches downstream validation rather than immediate provider failure. Confirm `/admin/diagnostics/workers-ai-probes` returns 404.

@@ -89,6 +89,57 @@ describe("OpenMeteoWeatherService", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it("retries geocoding once without the administrative suffix", async () => {
+    const geocodingNames: string[] = [];
+    let forecastCalls = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        const name = url.searchParams.get("name") ?? "";
+        geocodingNames.push(name);
+        if (name === "斗六市") return jsonResponse({ results: [] });
+        return jsonResponse({ results: [{ name: "Douliu", country: "Taiwan", latitude: 23.71, longitude: 120.54, timezone: "Asia/Taipei" }] });
+      }
+      forecastCalls += 1;
+      return jsonResponse({
+        current: { temperature_2m: 27, weather_code: 1, wind_speed_10m: 8, precipitation: 0 },
+        daily: { time: ["2026-08-09"], temperature_2m_max: [30], temperature_2m_min: [24], precipitation_sum: [0], weather_code: [1] },
+      });
+    });
+
+    const answer = await new OpenMeteoWeatherService(fetcher)
+      .answer({ question: "請問斗六市明天適合跑步嗎？", locale: "zh-TW" });
+
+    expect(geocodingNames).toEqual(["斗六市", "斗六"]);
+    expect(forecastCalls).toBe(1);
+    expect(answer.model).toBe("open-meteo");
+    expect(answer.text).toContain("Douliu / Taiwan");
+  });
+
+  it("stops after two invalid geocoding candidates without calling forecast", async () => {
+    const geocodingNames: string[] = [];
+    let forecastCalls = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.hostname === "geocoding-api.open-meteo.com") {
+        const name = url.searchParams.get("name") ?? "";
+        geocodingNames.push(name);
+        return name === "斗六市"
+          ? jsonResponse({ results: [{ name, latitude: Number.NaN, longitude: 120.54 }] })
+          : jsonResponse({ results: [] });
+      }
+      forecastCalls += 1;
+      return jsonResponse({});
+    });
+
+    const answer = await new OpenMeteoWeatherService(fetcher)
+      .answer({ question: "請問斗六市明天適合跑步嗎？", locale: "zh-TW" });
+
+    expect(geocodingNames).toEqual(["斗六市", "斗六"]);
+    expect(forecastCalls).toBe(0);
+    expect(answer.text).toContain("找不到");
+  });
+
   it("uses the default location when the prompt lacks a city", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

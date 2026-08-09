@@ -5,7 +5,7 @@ import type {
   AnswerService,
   AnswerStorageOperation,
 } from "../answers/types";
-import { extractWeatherLocationQuery } from "../intents/router";
+import { extractWeatherLocationQuery, weatherLocationCandidates } from "../intents/router";
 import type { WeatherCacheRepository } from "../storage/weather-cache";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -190,12 +190,19 @@ export class OpenMeteoWeatherService implements AnswerService {
       };
     }
 
-    const geocoding = await fetchJson<GeocodingResult>(
-      this.fetcher,
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityQuery)}&count=1&language=zh&format=json`,
-    );
-    const location = geocoding.results?.[0];
-    if (!location || typeof location.latitude !== "number" || typeof location.longitude !== "number") {
+    let location: NonNullable<GeocodingResult["results"]>[number] | undefined;
+    for (const candidate of weatherLocationCandidates(cityQuery)) {
+      const geocoding = await fetchJson<GeocodingResult>(
+        this.fetcher,
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(candidate)}&count=1&language=zh&format=json`,
+      );
+      const result = geocoding.results?.find((item) => Number.isFinite(item.latitude) && Number.isFinite(item.longitude));
+      if (result) {
+        location = result;
+        break;
+      }
+    }
+    if (!location) {
       return {
         text: `找不到「${cityQuery}」的天氣地點，請改用更完整的城市名稱。`,
         model: "open-meteo",

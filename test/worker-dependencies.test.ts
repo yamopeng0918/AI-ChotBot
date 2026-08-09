@@ -183,11 +183,13 @@ describe("grounded provider production wiring", () => {
       purgeExpired: vi.fn(),
     };
     const openRouterBodies: Array<{ model: string }> = [];
+    const providerOrder: string[] = [];
     const groundedMessages: unknown[][] = [];
     const workersAiResponses = [...(options.workersAiResponses ?? [])];
     const ai = {
       run: vi.fn(async (model: string, input: { messages?: unknown[] }) => {
         if (model === "@cf/baai/bge-m3") return { data: [Array(1024).fill(0)] };
+        providerOrder.push("workers_ai");
         groundedMessages.push(input.messages ?? []);
         if (options.workersAiFails) throw new Error("workers unavailable");
         return {
@@ -222,7 +224,9 @@ describe("grounded provider production wiring", () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("openrouter.ai")) {
-        openRouterBodies.push(JSON.parse(String(init?.body)) as { model: string });
+        const body = JSON.parse(String(init?.body)) as { model: string };
+        openRouterBodies.push(body);
+        providerOrder.push(`openrouter:${body.model}`);
         return new Response(null, { status: 500 });
       }
       if (url.includes("api.line.me")) return new Response(null, { status: 200 });
@@ -246,7 +250,7 @@ describe("grounded provider production wiring", () => {
 
     await worker.queue({ messages: [message] } as never, env, {} as ExecutionContext);
 
-    return { ai, groundedMessages, openRouterBodies, repository, evidenceId };
+    return { ai, groundedMessages, openRouterBodies, providerOrder, repository, evidenceId };
   }
 
   it("uses Workers AI first without calling configured OpenRouter models", async () => {
@@ -278,12 +282,17 @@ describe("grounded provider production wiring", () => {
   );
 
   it("uses configured OpenRouter models in order only after Workers AI fails", async () => {
-    const { openRouterBodies } = await runGroundedQuestion({
+    const { openRouterBodies, providerOrder } = await runGroundedQuestion({
       fallbackModel: "fallback/model",
       workersAiFails: true,
     });
 
     expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model", "fallback/model"]);
+    expect(providerOrder).toEqual([
+      "workers_ai",
+      "openrouter:primary/model",
+      "openrouter:fallback/model",
+    ]);
   });
 
   it("sends the corrective validation attempt to Workers AI before OpenRouter", async () => {

@@ -205,3 +205,31 @@ Export the existing production grounded response format and closed Workers AI fa
 - [ ] **Step 4: Verify, review, commit, deploy, and invoke once**
 
 Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent security review, commit `feat: add controlled Workers AI diagnostics`, deploy, invoke the endpoint once with the existing bearer token, record only the three safe results, then remove or disable the endpoint after root-cause analysis.
+
+### Task 7: Split the grounded schema into progressive probes
+
+**Files:**
+- Modify: `src/diagnostics/workers-ai-probes.ts`
+- Modify: `test/diagnostics/workers-ai-probes.test.ts`
+- Modify: `test/diagnostics/provider-routes.test.ts`
+
+**Interfaces:**
+- Consumes: the existing authenticated probe endpoint and fixed synthetic prompt.
+- Produces: six ordered safe probe results named `baseline`, `simple_json`, `nested_shape`, `closed_required`, `nonempty`, and `grounded_schema`.
+
+- [ ] **Step 1: Write RED tests**
+
+Assert six sequential calls and cumulative schemas: nested types only; required fields plus `additionalProperties: false`; non-empty constraints; then production `uniqueItems`. Assert every successful output is discarded, every failure is reduced to the closed category, and route responses still contain only the safe report.
+
+- [ ] **Step 2: Run RED**
+
+Run: `npm.cmd test -- test/diagnostics/workers-ai-probes.test.ts test/diagnostics/provider-routes.test.ts`
+Expected: six-probe order/schema assertions fail because only three probes exist.
+
+- [ ] **Step 3: Implement cumulative fixed schemas**
+
+Define immutable cumulative schema constants using the same fixed synthetic messages for all four grounded variants. Execute them sequentially and preserve the existing safe result reduction. Do not read request data or alter the production grounded generator schema.
+
+- [ ] **Step 4: Verify, review, commit, deploy, and invoke once**
+
+Run focused tests, full tests, typecheck, and Wrangler dry-run. Obtain independent review, commit `chore: isolate grounded schema compatibility`, deploy, invoke once, and use the first failed progressive probe as the root-cause boundary.

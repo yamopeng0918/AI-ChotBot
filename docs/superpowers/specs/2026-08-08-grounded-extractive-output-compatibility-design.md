@@ -40,3 +40,7 @@ Production proved that the Workers AI binding can reject with no usable name, nu
 ## Approved controlled-probe addendum
 
 Stop expanding opaque-error inspection. Add an authenticated `POST /admin/diagnostics/workers-ai-probes` endpoint protected by the existing `ADMIN_API_TOKEN` bearer middleware. It accepts no request body and sequentially runs three fixed, content-free probes against `@cf/meta/llama-3.1-8b-instruct-fast`: plain text generation, a minimal JSON Schema, and the production grounded JSON Schema with fixed synthetic evidence. Return only each probe name, `success` or `failed`, and the existing closed diagnostic category on failure. Never return or log prompt text, model output, raw errors, messages, stack traces, tokens, secrets, or user/LINE data. The ordinary LINE, Queue, fallback, storage, and publication paths remain unchanged.
+
+## Approved progressive-schema probe addendum
+
+The first controlled run proved baseline and minimal JSON Schema succeed while the production grounded schema fails. Replace the single jump to the production schema with four cumulative fixed probes: `nested_shape` adds only the nested answer/claims/evidenceIds types; `closed_required` adds required fields and closed objects; `nonempty` adds `minLength` and `minItems`; `grounded_schema` finally adds `uniqueItems`. Keep the original baseline and simple JSON probes. This isolates the first incompatible constraint group without changing the production answer path or exposing provider content.

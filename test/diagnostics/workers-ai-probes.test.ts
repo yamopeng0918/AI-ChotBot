@@ -16,10 +16,13 @@ describe("runWorkersAiProbes", () => {
     await expect(runWorkersAiProbes(ai)).resolves.toEqual({ probes: [
       { name: "baseline", outcome: "success" },
       { name: "simple_json", outcome: "success" },
+      { name: "nested_shape", outcome: "success" },
+      { name: "closed_required", outcome: "success" },
+      { name: "nonempty", outcome: "success" },
       { name: "grounded_schema", outcome: "success" },
     ] });
-    expect(order).toEqual([1, 2, 3]);
-    expect(ai.run).toHaveBeenCalledTimes(3);
+    expect(order).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(ai.run).toHaveBeenCalledTimes(6);
     expect(ai.run.mock.calls[0]![1]).not.toHaveProperty("response_format");
     expect(ai.run.mock.calls[1]![1]).toMatchObject({
       response_format: {
@@ -32,7 +35,67 @@ describe("runWorkersAiProbes", () => {
         },
       },
     });
-    expect(ai.run.mock.calls[2]![1]).toMatchObject({
+    const nestedSchema = (ai.run.mock.calls[2]![1] as { response_format: { json_schema: Record<string, unknown> } })
+      .response_format.json_schema;
+    expect(nestedSchema).toMatchObject({
+      type: "object",
+      properties: {
+        answer: { type: "string" },
+        claims: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              text: { type: "string" },
+              evidenceIds: { type: "array", items: { type: "string" } },
+            },
+          },
+        },
+      },
+    });
+    expect(nestedSchema).not.toHaveProperty("required");
+    expect(nestedSchema).not.toHaveProperty("additionalProperties");
+
+    expect(ai.run.mock.calls[3]![1]).toMatchObject({
+      response_format: {
+        json_schema: {
+          additionalProperties: false,
+          required: ["answer", "claims"],
+          properties: {
+            claims: {
+              items: {
+                additionalProperties: false,
+                required: ["text", "evidenceIds"],
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(ai.run.mock.calls[4]![1]).toMatchObject({
+      response_format: {
+        json_schema: {
+          properties: {
+            answer: { minLength: 1 },
+            claims: {
+              minItems: 1,
+              items: {
+                properties: {
+                  text: { minLength: 1 },
+                  evidenceIds: { minItems: 1 },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(ai.run.mock.calls[4]![1]).not.toMatchObject({
+      response_format: { json_schema: { properties: { claims: { items: { properties: {
+        evidenceIds: { uniqueItems: true },
+      } } } } } },
+    });
+    expect(ai.run.mock.calls[5]![1]).toMatchObject({
       response_format: WORKERS_AI_GROUNDED_RESPONSE_FORMAT,
     });
     expect(JSON.stringify(await runWorkersAiProbes({ run: vi.fn().mockResolvedValue({ response: "secret" }) })))
@@ -44,6 +107,9 @@ describe("runWorkersAiProbes", () => {
       run: vi.fn()
         .mockRejectedValueOnce("No more data centers to forward the request: secret-capacity")
         .mockRejectedValueOnce(new Error("JSON Mode couldn't be met: secret-json"))
+        .mockResolvedValueOnce({ response: "secret-nested-output" })
+        .mockRejectedValueOnce(new Error("secret-closed"))
+        .mockResolvedValueOnce({ response: "secret-nonempty-output" })
         .mockRejectedValueOnce(new Error("secret-unknown")),
     };
 
@@ -52,9 +118,12 @@ describe("runWorkersAiProbes", () => {
     expect(result).toEqual({ probes: [
       { name: "baseline", outcome: "failed", diagnosticCategory: "capacity" },
       { name: "simple_json", outcome: "failed", diagnosticCategory: "json_mode_unmet" },
+      { name: "nested_shape", outcome: "success" },
+      { name: "closed_required", outcome: "failed", diagnosticCategory: "unknown" },
+      { name: "nonempty", outcome: "success" },
       { name: "grounded_schema", outcome: "failed", diagnosticCategory: "unknown" },
     ] });
-    expect(ai.run).toHaveBeenCalledTimes(3);
-    expect(JSON.stringify(result)).not.toMatch(/secret-capacity|secret-json|secret-unknown|message|stack|error/);
+    expect(ai.run).toHaveBeenCalledTimes(6);
+    expect(JSON.stringify(result)).not.toMatch(/secret-capacity|secret-json|secret-nested|secret-closed|secret-nonempty|secret-unknown|message|stack|error/);
   });
 });

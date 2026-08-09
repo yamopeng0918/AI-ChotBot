@@ -24,6 +24,9 @@ describe("POST /admin/diagnostics/workers-ai-probes", () => {
     const report = { probes: [
       { name: "baseline" as const, outcome: "success" as const },
       { name: "simple_json" as const, outcome: "failed" as const, diagnosticCategory: "json_mode_unmet" as const },
+      { name: "nested_shape" as const, outcome: "success" as const },
+      { name: "closed_required" as const, outcome: "success" as const },
+      { name: "nonempty" as const, outcome: "success" as const },
       { name: "grounded_schema" as const, outcome: "failed" as const, diagnosticCategory: "unknown" as const },
     ] };
     const runner = { run: vi.fn().mockResolvedValue(report) };

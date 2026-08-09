@@ -8,7 +8,13 @@ import {
 export interface WorkersAiProbeBinding {
   run(model: string, input: Record<string, unknown>): Promise<unknown>;
 }
-export type WorkersAiProbeName = "baseline" | "simple_json" | "grounded_schema";
+export type WorkersAiProbeName =
+  | "baseline"
+  | "simple_json"
+  | "nested_shape"
+  | "closed_required"
+  | "nonempty"
+  | "grounded_schema";
 export type WorkersAiProbeResult =
   | { name: WorkersAiProbeName; outcome: "success" }
   | { name: WorkersAiProbeName; outcome: "failed"; diagnosticCategory: WorkersAiDiagnosticCategory };
@@ -26,6 +32,82 @@ const SIMPLE_JSON_RESPONSE_FORMAT = {
     properties: { status: { type: "string", enum: ["ok"] } },
   },
 } as const;
+
+const nestedProperties = {
+  answer: { type: "string" },
+  claims: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+        evidenceIds: { type: "array", items: { type: "string" } },
+      },
+    },
+  },
+} as const;
+
+const NESTED_SHAPE_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: { type: "object", properties: nestedProperties },
+} as const;
+
+const CLOSED_REQUIRED_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["answer", "claims"],
+    properties: {
+      answer: { type: "string" },
+      claims: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["text", "evidenceIds"],
+          properties: {
+            text: { type: "string" },
+            evidenceIds: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+const NONEMPTY_RESPONSE_FORMAT = {
+  type: "json_schema",
+  json_schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["answer", "claims"],
+    properties: {
+      answer: { type: "string", minLength: 1 },
+      claims: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["text", "evidenceIds"],
+          properties: {
+            text: { type: "string", minLength: 1 },
+            evidenceIds: { type: "array", minItems: 1, items: { type: "string" } },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+const GROUNDED_PROBE_MESSAGES = [
+  {
+    role: "system",
+    content: "Use the exact fixed evidence sentence as answer and claim text. Cite only evidence ID e1.",
+  },
+  { role: "user", content: "Evidence e1: Running is exercise." },
+] as const;
 
 const PROBES: ReadonlyArray<{ name: WorkersAiProbeName; input: Record<string, unknown> }> = [
   {
@@ -46,15 +128,36 @@ const PROBES: ReadonlyArray<{ name: WorkersAiProbeName; input: Record<string, un
     },
   },
   {
+    name: "nested_shape",
+    input: {
+      messages: GROUNDED_PROBE_MESSAGES,
+      temperature: 0,
+      max_tokens: 128,
+      response_format: NESTED_SHAPE_RESPONSE_FORMAT,
+    },
+  },
+  {
+    name: "closed_required",
+    input: {
+      messages: GROUNDED_PROBE_MESSAGES,
+      temperature: 0,
+      max_tokens: 128,
+      response_format: CLOSED_REQUIRED_RESPONSE_FORMAT,
+    },
+  },
+  {
+    name: "nonempty",
+    input: {
+      messages: GROUNDED_PROBE_MESSAGES,
+      temperature: 0,
+      max_tokens: 128,
+      response_format: NONEMPTY_RESPONSE_FORMAT,
+    },
+  },
+  {
     name: "grounded_schema",
     input: {
-      messages: [
-        {
-          role: "system",
-          content: "Use the exact fixed evidence sentence as answer and claim text. Cite only evidence ID e1.",
-        },
-        { role: "user", content: "Evidence e1: Running is exercise." },
-      ],
+      messages: GROUNDED_PROBE_MESSAGES,
       temperature: 0,
       max_tokens: 128,
       response_format: WORKERS_AI_GROUNDED_RESPONSE_FORMAT,

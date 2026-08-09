@@ -162,7 +162,11 @@ describe("createWorker repository injection", () => {
 });
 
 describe("grounded provider production wiring", () => {
-  async function runGroundedQuestion(fallbackModel?: string) {
+  async function runGroundedQuestion(options: {
+    fallbackModel?: string;
+    workersAiFails?: boolean;
+    workersAiResponses?: string[];
+  } = {}) {
     const vectorId = "a".repeat(64);
     const evidenceId = `chunk:${vectorId}`;
     const repository = {
@@ -179,11 +183,15 @@ describe("grounded provider production wiring", () => {
       purgeExpired: vi.fn(),
     };
     const openRouterBodies: Array<{ model: string }> = [];
+    const groundedMessages: unknown[][] = [];
+    const workersAiResponses = [...(options.workersAiResponses ?? [])];
     const ai = {
-      run: vi.fn(async (model: string) => {
+      run: vi.fn(async (model: string, input: { messages?: unknown[] }) => {
         if (model === "@cf/baai/bge-m3") return { data: [Array(1024).fill(0)] };
+        groundedMessages.push(input.messages ?? []);
+        if (options.workersAiFails) throw new Error("workers unavailable");
         return {
-          response: JSON.stringify({
+          response: workersAiResponses.shift() ?? JSON.stringify({
             answer: "The event is open.",
             claims: [{ text: "The event is open.", evidenceIds: [evidenceId] }],
           }),
@@ -225,7 +233,7 @@ describe("grounded provider production wiring", () => {
       LINE_CHANNEL_ACCESS_TOKEN: "line",
       OPENROUTER_API_KEY: "key",
       OPENROUTER_MODEL: "primary/model",
-      OPENROUTER_FALLBACK_MODEL: fallbackModel,
+      OPENROUTER_FALLBACK_MODEL: options.fallbackModel,
       TAVILY_API_KEY: "tavily",
       AI: ai as unknown as Ai,
       VECTORIZE: {
@@ -238,13 +246,13 @@ describe("grounded provider production wiring", () => {
 
     await worker.queue({ messages: [message] } as never, env, {} as ExecutionContext);
 
-    return { ai, openRouterBodies, repository };
+    return { ai, groundedMessages, openRouterBodies, repository, evidenceId };
   }
 
-  it("uses Workers AI when both configured OpenRouter models fail", async () => {
-    const { ai, openRouterBodies, repository } = await runGroundedQuestion("fallback/model");
+  it("uses Workers AI first without calling configured OpenRouter models", async () => {
+    const { ai, openRouterBodies, repository } = await runGroundedQuestion({ fallbackModel: "fallback/model" });
 
-    expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model", "fallback/model"]);
+    expect(openRouterBodies).toEqual([]);
     expect(ai.run).toHaveBeenCalledWith(
       "@cf/meta/llama-3.1-8b-instruct-fast",
       expect.objectContaining({ messages: expect.any(Array) }),
@@ -257,9 +265,9 @@ describe("grounded provider production wiring", () => {
   });
 
   it.each([undefined, "", "   ", "primary/model"])(
-    "skips a missing, blank, or duplicate fallback model (%j)",
+    "uses only the primary OpenRouter fallback when Workers AI fails and fallback is %j",
     async (fallbackModel) => {
-      const { ai, openRouterBodies } = await runGroundedQuestion(fallbackModel);
+      const { ai, openRouterBodies } = await runGroundedQuestion({ fallbackModel, workersAiFails: true });
 
       expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model"]);
       expect(ai.run).toHaveBeenCalledWith(
@@ -268,6 +276,39 @@ describe("grounded provider production wiring", () => {
       );
     },
   );
+
+  it("uses configured OpenRouter models in order only after Workers AI fails", async () => {
+    const { openRouterBodies } = await runGroundedQuestion({
+      fallbackModel: "fallback/model",
+      workersAiFails: true,
+    });
+
+    expect(openRouterBodies.map((body) => body.model)).toEqual(["primary/model", "fallback/model"]);
+  });
+
+  it("sends the corrective validation attempt to Workers AI before OpenRouter", async () => {
+    const invalid = JSON.stringify({
+      answer: "A paraphrased event statement.",
+      claims: [{ text: "A paraphrased event statement.", evidenceIds: ["chunk:" + "a".repeat(64)] }],
+    });
+    const valid = JSON.stringify({
+      answer: "The event is open.",
+      claims: [{ text: "The event is open.", evidenceIds: ["chunk:" + "a".repeat(64)] }],
+    });
+    const { groundedMessages, openRouterBodies, repository } = await runGroundedQuestion({
+      fallbackModel: "fallback/model",
+      workersAiResponses: [invalid, valid],
+    });
+
+    expect(groundedMessages).toHaveLength(2);
+    expect(JSON.stringify(groundedMessages[1])).toContain("corrected strict JSON");
+    expect(openRouterBodies).toEqual([]);
+    expect(repository.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "answered", model: "@cf/meta/llama-3.1-8b-instruct-fast" }),
+      "answered",
+      expect.any(String),
+    );
+  });
 });
 
 describe("cron telemetry", () => {

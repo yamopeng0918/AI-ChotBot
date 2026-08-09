@@ -272,8 +272,13 @@ return {
     const knowledgeAnswering: Pick<ProcessDependencies, "retriever" | "webSearch" | "groundedAnswerService"> = injectedKnowledgeAnswering ?? (env.AI && env.VECTORIZE && env.TAVILY_API_KEY ? (() => {
       const retrievalRepository = new KnowledgeRepository(env.DB);
       const entries: GroundedGeneratorEntry[] = [{
-        provider: "openrouter",
+        provider: "workers_ai",
         role: "primary",
+        model: WORKERS_AI_GROUNDED_MODEL,
+        generator: new WorkersAiGroundedGenerator(env.AI),
+      }, {
+        provider: "openrouter",
+        role: "fallback",
         model: env.OPENROUTER_MODEL,
         generator: new OpenRouterGroundedGenerator(fetcher, env.OPENROUTER_API_KEY, env.OPENROUTER_MODEL),
       }];
@@ -281,17 +286,11 @@ return {
       if (fallbackModel && fallbackModel !== env.OPENROUTER_MODEL) {
         entries.push({
           provider: "openrouter",
-          role: "fallback",
+          role: "terminal",
           model: fallbackModel,
           generator: new OpenRouterGroundedGenerator(fetcher, env.OPENROUTER_API_KEY, fallbackModel),
         });
       }
-      entries.push({
-        provider: "workers_ai",
-        role: "terminal",
-        model: WORKERS_AI_GROUNDED_MODEL,
-        generator: new WorkersAiGroundedGenerator(env.AI),
-      });
       const groundedGenerator = new FallbackGroundedGenerator(entries, (event) => {
         console.info("grounded:provider", event);
       });

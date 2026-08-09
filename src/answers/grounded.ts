@@ -16,8 +16,9 @@ export type GroundedValidationFailureReason =
   | "entailment_failed";
 export type GroundedValidationEvent =
   | { attempt: 1 | 2; outcome: "failed"; reason: GroundedValidationFailureReason; model?: string }
-  | { attempt: 1 | 2; outcome: "success"; reason: "validated"; model?: string };
-type ValidationResult = GroundedValidationFailureReason | null;
+  | { attempt: 1 | 2; outcome: "success"; reason: "validated"; model?: string; discardedClaimCount?: number };
+type ValidationSuccess = { parsed: Parsed; discardedClaimCount: number };
+type ValidationResult = GroundedValidationFailureReason | ValidationSuccess;
 
 export async function strictEntailment(claim: string, evidence: string): Promise<boolean> {
   const expected = semanticText(claim);
@@ -38,11 +39,18 @@ export class GroundedAnswerService {
     for (let attempt = 0; attempt < 2; attempt++) {
       const generated = await this.generator.generate(messages); lastModel = generated.model;
       const parsed = parse(generated.text);
-      const reason = parsed ? await validate(parsed, request.evidence, this.entails) : "parse_invalid";
-      if (reason === null) {
-        this.observeValidation({ attempt: (attempt + 1) as 1 | 2, outcome: "success", reason: "validated", model: generated.model });
-        return render(parsed!, request.evidence, generated.model);
+      const result = parsed ? await validate(parsed, request.evidence, this.entails) : "parse_invalid";
+      if (typeof result !== "string") {
+        this.observeValidation({
+          attempt: (attempt + 1) as 1 | 2,
+          outcome: "success",
+          reason: "validated",
+          model: generated.model,
+          ...(result.discardedClaimCount > 0 ? { discardedClaimCount: result.discardedClaimCount } : {}),
+        });
+        return render(result.parsed, request.evidence, generated.model);
       }
+      const reason = result;
       this.observeValidation({ attempt: (attempt + 1) as 1 | 2, outcome: "failed", reason, model: generated.model });
       if (attempt === 0) messages.push({ role: "user", content: "Your output was invalid or unsupported. Return corrected strict JSON using only evidence IDs and fully cited, entailed factual claims." });
     }
@@ -94,24 +102,31 @@ async function validate(parsed: Parsed, evidence: KnowledgeEvidence[], entails: 
     citedAcrossClaims.push(valid);
     if (!await entails(claim.text, valid.map((item) => item.text).join("\n"))) return "entailment_failed";
   }
-  return crossClaimConflict(parsed.claims, citedAcrossClaims) ? "conflict" : null;
+  const claims = pruneCrossClaimConflicts(parsed.claims, citedAcrossClaims);
+  return claims.length
+    ? { parsed: { claims }, discardedClaimCount: parsed.claims.length - claims.length }
+    : "conflict";
 }
 function conflictingEvidence(evidence: KnowledgeEvidence[]): boolean {
   const facts = evidence.map((item) => factValues(item.text));
   return conflictingSets(facts.map((x) => x.dates)) || conflictingSets(facts.map((x) => x.numbers)) || conflictingSets(facts.map((x) => x.status));
 }
-function crossClaimConflict(claims: GroundedClaim[], evidence: KnowledgeEvidence[][]): boolean {
+function pruneCrossClaimConflicts(claims: GroundedClaim[], evidence: KnowledgeEvidence[][]): GroundedClaim[] {
+  const discarded = new Set<number>();
   for (let left = 0; left < claims.length; left++) for (let right = left + 1; right < claims.length; right++) {
-    const a = factValues(claims[left]!.text), b = factValues(claims[right]!.text);
-    const statusConflict = different(a.status, b.status);
-    if (!statusConflict && (!related(claims[left]!.text, claims[right]!.text) || (!different(a.dates, b.dates) && !different(a.numbers, b.numbers)))) continue;
-    const subjects = [subjectConcept(claims[left]!.text), subjectConcept(claims[right]!.text)];
-    if (statusConflict && subjects[0] && subjects[1] && subjects[0] !== subjects[1]) continue;
-    const winner = authorityWinner(evidence[left]!, evidence[right]!);
-    if (winner === null) return true; // equal authority leaves the conflict unresolved
-    return true; // output includes the lower-authority contradictory claim, so it fails closed
+    if (!claimsConflict(claims[left]!, claims[right]!)) continue;
+    const ranks = [authorityRank(evidence[left]!), authorityRank(evidence[right]!)];
+    if (ranks[0] === ranks[1]) { discarded.add(left); discarded.add(right); }
+    else discarded.add(ranks[0]! < ranks[1]! ? left : right);
   }
-  return false;
+  return claims.filter((_claim, index) => !discarded.has(index));
+}
+function claimsConflict(left: GroundedClaim, right: GroundedClaim): boolean {
+  const a = factValues(left.text), b = factValues(right.text);
+  const statusConflict = different(a.status, b.status);
+  if (!statusConflict && (!related(left.text, right.text) || (!different(a.dates, b.dates) && !different(a.numbers, b.numbers)))) return false;
+  const subjects = [subjectConcept(left.text), subjectConcept(right.text)];
+  return !(statusConflict && subjects[0] && subjects[1] && subjects[0] !== subjects[1]);
 }
 function render(parsed: Parsed, evidence: KnowledgeEvidence[], model: string): GroundedAnswer {
   const byId = new Map(evidence.map((item) => [item.id, item])), usedEvidenceIds: string[] = [];
@@ -166,7 +181,4 @@ function subjectConcept(value: string): string | null {
   if (/\b(?:fee|price|cost)\b|費用|價格/.test(normalized)) return "price";
   return null;
 }
-function authorityWinner(left: KnowledgeEvidence[], right: KnowledgeEvidence[]): 0 | 1 | null {
-  const rank = (items: KnowledgeEvidence[]) => Math.max(...items.map((item) => item.sourceType === "knowledge" ? 2 : 1));
-  const ranks = [rank(left), rank(right)]; return ranks[0] === ranks[1] ? null : ranks[0]! > ranks[1]! ? 0 : 1;
-}
+function authorityRank(items: KnowledgeEvidence[]): number { return Math.max(...items.map((item) => item.sourceType === "knowledge" ? 2 : 1)); }

@@ -95,21 +95,81 @@ describe("GroundedAnswerService", () => {
     expect(answer.text).toBe(INSUFFICIENT_EVIDENCE_TEXT);
   });
 
-  it("rejects cross-claim contradictions and lower-authority web claims conflicting with knowledge", async () => {
+  it("retains a knowledge claim and prunes a conflicting lower-authority web claim", async () => {
     const knowledge = { ...file, id: "official", text: "Registration is closed." }, lower = { ...web, id: "web", text: "Registration is open." };
     const output = JSON.stringify({ answer: "Registration is closed. Registration is open.", claims: [{ text: knowledge.text, evidenceIds: ["official"] }, { text: lower.text, evidenceIds: ["web"] }] });
     const answer = await new GroundedAnswerService({ generate: vi.fn().mockResolvedValue({ text: output, model: "m" }) }, async () => true).answer({ question: "q", evidence: [knowledge, lower], webUnavailable: false });
-    expect(answer.text).toBe(INSUFFICIENT_EVIDENCE_TEXT);
+    expect(answer.text).toContain("Registration is closed.\n\nSources:");
+    expect(answer.text).not.toContain("Registration is open.");
+    expect(answer.usedEvidenceIds).toEqual(["official"]);
+    expect(answer.validatedClaims).toEqual([{ text: knowledge.text, evidenceIds: ["official"] }]);
+  });
+
+  it.each([false, true])("prunes equal-authority conflicts regardless of their order while retaining an unrelated claim: reversed=%s", async (reversed) => {
+    const closed = { ...file, id: "closed", text: "Registration is closed." };
+    const open = { ...file, id: "open", text: "Registration is open." };
+    const hydration = { ...file, id: "water", text: "Hydrate every 20 minutes." };
+    const conflicting = [
+      { text: closed.text, evidenceIds: [closed.id] },
+      { text: open.text, evidenceIds: [open.id] },
+    ];
+    if (reversed) conflicting.reverse();
+    const output = JSON.stringify({ claims: [...conflicting, { text: hydration.text, evidenceIds: [hydration.id] }] });
+
+    const answer = await new GroundedAnswerService({ generate: vi.fn().mockResolvedValue({ text: output, model: "m" }) }, async () => true)
+      .answer({ question: "q", evidence: [closed, open, hydration], webUnavailable: false });
+
+    expect(answer.usedEvidenceIds).toEqual(["water"]);
+    expect(answer.validatedClaims).toEqual([{ text: hydration.text, evidenceIds: ["water"] }]);
+    expect(answer.text).toContain("Hydrate every 20 minutes.\n\nSources:");
+    expect(answer.text).not.toContain("Registration is");
+  });
+
+  it.each([false, true])("selects the same higher-authority claim regardless of provider order: reversed=%s", async (reversed) => {
+    const knowledge = { ...file, id: "official", text: "Registration is closed." };
+    const lower = { ...web, id: "web", text: "Registration is open." };
+    const claims = [
+      { text: knowledge.text, evidenceIds: [knowledge.id] },
+      { text: lower.text, evidenceIds: [lower.id] },
+    ];
+    if (reversed) claims.reverse();
+
+    const answer = await new GroundedAnswerService({ generate: vi.fn().mockResolvedValue({ text: JSON.stringify({ claims }), model: "m" }) }, async () => true)
+      .answer({ question: "q", evidence: [knowledge, lower], webUnavailable: false });
+
+    expect(answer.usedEvidenceIds).toEqual(["official"]);
+    expect(answer.validatedClaims).toEqual([{ text: knowledge.text, evidenceIds: ["official"] }]);
+  });
+
+  it("reports only a discarded claim count when conflict pruning succeeds", async () => {
+    const knowledge = { ...file, id: "official", text: "Registration is closed." };
+    const lower = { ...web, id: "web", text: "Registration is open." };
+    const output = JSON.stringify({ claims: [{ text: knowledge.text, evidenceIds: [knowledge.id] }, { text: lower.text, evidenceIds: [lower.id] }] });
+    const events: GroundedValidationEvent[] = [];
+
+    await new GroundedAnswerService(
+      { generate: vi.fn().mockResolvedValue({ text: output, model: "grounded-model" }) },
+      async () => true,
+      (event) => events.push(event),
+    ).answer({ question: "private-question-fixture", evidence: [knowledge, lower], webUnavailable: false });
+
+    expect(events).toEqual([{ attempt: 1, outcome: "success", reason: "validated", model: "grounded-model", discardedClaimCount: 1 }]);
+    const serialized = JSON.stringify(events);
+    for (const forbidden of ["private-question-fixture", output, knowledge.text, lower.text, knowledge.url, lower.url, "\"question\":", "\"claim\":", "\"evidence\":", "\"url\":", "\"token\":", "\"userId\":", "\"groupId\":"]) {
+      if (forbidden) expect(serialized).not.toContain(forbidden);
+    }
   });
 
   it.each([
     ["Enrollment is open.", "Registration is closed."],
     ["報名已開放。", "登記已關閉。"],
-  ])("rejects paraphrased lower-authority contradiction: %s / %s", async (webClaim, knowledgeClaim) => {
+  ])("prunes a paraphrased lower-authority contradiction: %s / %s", async (webClaim, knowledgeClaim) => {
     const official = { ...file, id: "official", text: knowledgeClaim }, lower = { ...web, id: "web", text: webClaim };
     const output = JSON.stringify({ answer: `${knowledgeClaim} ${webClaim}`, claims: [{ text: knowledgeClaim, evidenceIds: ["official"] }, { text: webClaim, evidenceIds: ["web"] }] });
     const answer = await new GroundedAnswerService({ generate: vi.fn().mockResolvedValue({ text: output, model: "m" }) }, async () => true).answer({ question: "q", evidence: [official, lower], webUnavailable: false });
-    expect(answer.text).toBe(INSUFFICIENT_EVIDENCE_TEXT);
+    expect(answer.usedEvidenceIds).toEqual(["official"]);
+    expect(answer.validatedClaims).toEqual([{ text: knowledgeClaim, evidenceIds: ["official"] }]);
+    expect(answer.text).not.toContain(webClaim);
   });
   it("requests strict JSON from the configured OpenRouter model", async () => {
     const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => Response.json({ model: "actual/model", choices: [{ message: { content: valid } }] }));

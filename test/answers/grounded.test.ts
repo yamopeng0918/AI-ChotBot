@@ -141,6 +141,28 @@ describe("GroundedAnswerService", () => {
     expect(answer.validatedClaims).toEqual([{ text: knowledge.text, evidenceIds: ["official"] }]);
   });
 
+  it("retries and falls back when equal-authority conflict pruning removes every claim", async () => {
+    const closed = { ...file, id: "closed", text: "Registration is closed." };
+    const open = { ...file, id: "open", text: "Registration is open." };
+    const output = JSON.stringify({ claims: [
+      { text: closed.text, evidenceIds: [closed.id] },
+      { text: open.text, evidenceIds: [open.id] },
+    ] });
+    const generate = vi.fn().mockResolvedValue({ text: output, model: "grounded-model" });
+    const events: GroundedValidationEvent[] = [];
+
+    const answer = await new GroundedAnswerService({ generate }, async () => true, (event) => events.push(event))
+      .answer({ question: "q", evidence: [closed, open], webUnavailable: false });
+
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([
+      { attempt: 1, outcome: "failed", reason: "conflict", model: "grounded-model" },
+      { attempt: 2, outcome: "failed", reason: "conflict", model: "grounded-model" },
+    ]);
+    expect(answer.text).toBe(INSUFFICIENT_EVIDENCE_TEXT);
+    expect(answer.validatedClaims).toEqual([]);
+  });
+
   it("reports only a discarded claim count when conflict pruning succeeds", async () => {
     const knowledge = { ...file, id: "official", text: "Registration is closed." };
     const lower = { ...web, id: "web", text: "Registration is open." };
